@@ -1,0 +1,681 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    .panel {
+        margin-bottom: 20px;
+    }
+    .form-group {
+        margin-bottom: 15px;
+    }
+    #progressPanel .progress {
+        margin-bottom: 10px;
+    }
+    #configPreview {
+        font-family: 'Courier New', monospace;
+        font-size: 12px;
+    }
+    
+    /* 图片预览容器样式 */
+    .image-preview-container {
+        min-height: 180px;
+        border: 2px dashed #ddd;
+        border-radius: 8px;
+        padding: 10px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: #fafafa;
+        transition: border-color 0.3s ease;
+    }
+    
+    .image-preview-container:hover {
+        border-color: #337ab7;
+    }
+    
+    .image-preview-container.loading {
+        border-color: #5bc0de;
+        background-color: #f0f8ff;
+    }
+    
+    .image-preview-container.success {
+        border-color: #5cb85c;
+        background-color: #f0fff0;
+    }
+    
+    .image-preview-container.error {
+        border-color: #d9534f;
+        background-color: #fff5f5;
+    }
+    
+    /* 加载动画 */
+    .spinner {
+        width: 40px;
+        height: 40px;
+        position: relative;
+        margin: 0 auto 10px;
+    }
+    
+    .spinner > div {
+        width: 8px;
+        height: 8px;
+        background-color: #337ab7;
+        border-radius: 100%;
+        display: inline-block;
+        animation: sk-bouncedelay 1.4s infinite ease-in-out both;
+    }
+    
+    .spinner .bounce1 {
+        animation-delay: -0.32s;
+    }
+    
+    .spinner .bounce2 {
+        animation-delay: -0.16s;
+    }
+    
+    @keyframes sk-bouncedelay {
+        0%, 80%, 100% {
+            transform: scale(0);
+        } 40% {
+            transform: scale(1.0);
+        }
+    }
+    
+    /* 图片样式 */
+    .preview-image {
+        max-width: 150px;
+        max-height: 150px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        transition: transform 0.2s ease;
+    }
+    
+    .preview-image:hover {
+        transform: scale(1.05);
+        cursor: pointer;
+    }
+    
+    /* 占位符样式 */
+    .placeholder-content {
+        text-align: center;
+        color: #999;
+    }
+    
+    .placeholder-icon {
+        font-size: 48px;
+        color: #ccc;
+        margin-bottom: 10px;
+    }
+    
+    /* 错误状态样式 */
+    .error-content {
+        text-align: center;
+        color: #d9534f;
+    }
+    
+    .error-icon {
+        font-size: 32px;
+        margin-bottom: 10px;
+    }
+    
+    /* 角色选择样式 */
+    .character-selection {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 15px;
+        background-color: #f9f9f9;
+        max-height: 400px;
+        overflow-y: auto;
+    }
+    
+    .character-item {
+        text-align: center;
+        margin-bottom: 15px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+    
+    .character-item:hover {
+        transform: scale(1.05);
+    }
+    
+    .character-item.selected {
+        background-color: #337ab7;
+        border-radius: 8px;
+        padding: 5px;
+    }
+    
+    .character-item.selected .character-name {
+        color: white;
+        font-weight: bold;
+    }
+    
+    .character-image {
+        width: 80px;
+        height: 80px;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 2px solid transparent;
+        transition: border-color 0.3s ease;
+    }
+    
+    .character-item.selected .character-image {
+        border-color: white;
+    }
+    
+    .character-name {
+        font-size: 12px;
+        margin-top: 5px;
+        word-wrap: break-word;
+        color: #333;
+    }
+</style>
+<div class="container" style="max-width: 800px; margin-top: 30px;">
+    <div class="row">
+        <div class="col-md-12">
+            <h2 class="text-center" style="margin-bottom: 30px;">添加新角色</h2>
+            
+            <!-- 角色生成表单 -->
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h4>角色描述</h4>
+                </div>
+                <div class="panel-body">
+                    <form id="agentForm">
+                        <div class="form-group">
+                            <label for="agentName">角色名称 *</label>
+                            <input type="text" class="form-control" id="agentName" name="agentName" 
+                                   placeholder="请输入角色名称（例如：李小明）" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="agentDescription">角色描述 *</label>
+                            <textarea class="form-control" id="agentDescription" name="agentDescription" 
+                                      rows="4" placeholder="请简要描述这个角色的基本信息、性格特点、职业背景等（例如：一个25岁的程序员，性格内向但善良，喜欢阅读和编程）" required></textarea>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="agentAge">年龄</label>
+                            <input type="number" class="form-control" id="agentAge" name="agentAge" 
+                                   placeholder="请输入年龄（可选）" min="1" max="100">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="agentAppearance">外貌特征</label>
+                            <textarea class="form-control" id="agentAppearance" name="agentAppearance" 
+                                      rows="3" placeholder="请描述角色的外貌特征（例如：黑色短发，戴眼镜，中等身材，穿着休闲服装）"></textarea>
+                            <small class="help-block">这些信息将用于生成更准确的texture和角色</small>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="agentOccupation">职业</label>
+                            <input type="text" class="form-control" id="agentOccupation" name="agentOccupation" 
+                                   placeholder="请输入职业（可选）">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="agentPersonality">性格特点</label>
+                            <input type="text" class="form-control" id="agentPersonality" name="agentPersonality" 
+                                   placeholder="请输入性格特点（可选，例如：开朗、内向、幽默）">
+                        </div>
+                        
+                        <!-- 角色形象选择 -->
+                        <div class="form-group">
+                            <label>选择角色形象 *</label>
+                            <div id="characterSelection" class="character-selection">
+                                <div class="row" id="characterGrid">
+                                    <!-- 角色形象将通过JavaScript动态加载 -->
+                                </div>
+                                <input type="hidden" id="selectedCharacter" name="selectedCharacter" required>
+                            </div>
+                            <small class="help-block">请选择一个角色形象作为texture</small>
+                        </div>
+                        
+                        <div class="text-center">
+                            <button type="submit" class="btn btn-primary btn-lg" id="generateBtn">
+                                <span class="glyphicon glyphicon-plus"></span> 生成角色
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
+            <!-- 生成进度 -->
+            <div id="progressPanel" class="panel panel-info" style="display: none;">
+                <div class="panel-heading">
+                    <h4>生成进度</h4>
+                </div>
+                <div class="panel-body">
+                    <div class="progress">
+                        <div id="progressBar" class="progress-bar progress-bar-striped active" 
+                             role="progressbar" style="width: 0%">
+                            <span id="progressText">准备中...</span>
+                        </div>
+                    </div>
+                    <div id="progressDetails" class="text-muted">
+                        <p id="currentStep">等待开始...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 生成结果 -->
+            <div id="resultPanel" class="panel panel-success" style="display: none;">
+                <div class="panel-heading">
+                    <h4>生成结果</h4>
+                </div>
+                <div class="panel-body">
+                    <div class="row">
+                        <div class="col-md-6 col-md-offset-3">
+                            <h5>角色形象</h5>
+                            <div id="imageContainer" class="image-preview-container">
+                                <div id="imageLoading" class="loading-placeholder" style="display: none;">
+                                    <div class="spinner">
+                                        <div class="bounce1"></div>
+                                        <div class="bounce2"></div>
+                                        <div class="bounce3"></div>
+                                    </div>
+                                    <p class="text-muted">正在生成全身图...</p>
+                                </div>
+                                <img id="agentImage" src="" alt="角色" class="preview-image" 
+                                     style="display: none;"
+                                     onload="showImageSuccess()"
+                                     onerror="showImageError()">
+                                <div id="imageError" class="error-content" style="display: none;">
+                                    <div class="error-icon">
+                                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                    </div>
+                                    <p>图片生成失败</p>
+                                    <button type="button" class="btn btn-sm btn-default" onclick="retryImageGeneration()">
+                                        <span class="glyphicon glyphicon-refresh"></span> 重试
+                                    </button>
+                                </div>
+                                <div id="imagePlaceholder" class="placeholder-content">
+                                    <div class="placeholder-icon">
+                                        <span class="glyphicon glyphicon-picture"></span>
+                                    </div>
+                                    <p>全身图预览</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <h5>基本信息</h5>
+                            <div id="agentInfo">
+                                <p><strong>姓名：</strong><span id="resultName"></span></p>
+                                <p><strong>年龄：</strong><span id="resultAge"></span></p>
+                                <p><strong>职业：</strong><span id="resultOccupation"></span></p>
+                                <p><strong>性格：</strong><span id="resultPersonality"></span></p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row" style="margin-top: 20px;">
+                        <div class="col-md-12">
+                            <h5>生成的配置文件</h5>
+                            <pre id="configPreview" style="max-height: 300px; overflow-y: auto; background-color: #f5f5f5; padding: 10px; border-radius: 4px;"></pre>
+                        </div>
+                    </div>
+                    
+                    <div class="text-center" style="margin-top: 20px;">
+                        <button type="button" class="btn btn-success" id="saveBtn">
+                            <span class="glyphicon glyphicon-floppy-disk"></span> 保存角色
+                        </button>
+                        <button type="button" class="btn btn-primary" id="addToGameBtn" style="margin-left: 10px;">
+                            <span class="glyphicon glyphicon-plus-sign"></span> 立即添加到小镇
+                        </button>
+                        <button type="button" class="btn btn-default" id="resetBtn">
+                            <span class="glyphicon glyphicon-refresh"></span> 重新生成
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 错误信息 -->
+            <div id="errorPanel" class="panel panel-danger" style="display: none;">
+                <div class="panel-heading">
+                    <h4>生成失败</h4>
+                </div>
+                <div class="panel-body">
+                    <p id="errorMessage"></p>
+                    <div class="text-center">
+                        <button type="button" class="btn btn-warning" id="retryBtn">
+                            <span class="glyphicon glyphicon-repeat"></span> 重试
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock content %}
+
+{% block js_content %}
+<script>
+// 全局函数定义 - 必须在全局作用域中定义，以便HTML事件处理器可以访问
+function showImageSuccess() {
+    const imageEl = document.getElementById('agentImage');
+    const loadingEl = document.getElementById('imageLoading');
+    const placeholderEl = document.getElementById('imagePlaceholder');
+    const errorEl = document.getElementById('imageError');
+    const containerEl = document.getElementById('imageContainer');
+    
+    if (imageEl) imageEl.style.display = 'block';
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (placeholderEl) placeholderEl.style.display = 'none';
+    if (errorEl) errorEl.style.display = 'none';
+    if (containerEl) {
+        containerEl.className = 'image-preview-container success';
+    }
+}
+
+function showImageError() {
+    const imageEl = document.getElementById('agentImage');
+    const loadingEl = document.getElementById('imageLoading');
+    const placeholderEl = document.getElementById('imagePlaceholder');
+    const errorEl = document.getElementById('imageError');
+    const containerEl = document.getElementById('imageContainer');
+    
+    if (imageEl) imageEl.style.display = 'none';
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (placeholderEl) placeholderEl.style.display = 'none';
+    if (errorEl) errorEl.style.display = 'block';
+    if (containerEl) {
+        containerEl.className = 'image-preview-container error';
+    }
+}
+
+function retryImageGeneration() {
+    alert('重试功能将在后续版本中实现');
+}
+
+$(document).ready(function() {
+    let generatedConfig = null;
+    let generatedImages = null;
+    
+    // 加载角色形象
+    loadCharacterImages();
+    
+    // 表单提交处理
+    $('#agentForm').on('submit', function(e) {
+        e.preventDefault();
+        
+        // 验证是否选择了角色形象
+        if (!$('#selectedCharacter').val()) {
+            alert('请选择一个角色形象！');
+            return;
+        }
+        
+        generateAgent();
+    });
+    
+    // 重置按钮
+    $('#resetBtn').on('click', function() {
+        resetForm();
+    });
+    
+    // 重试按钮
+    $('#retryBtn').on('click', function() {
+        generateAgent();
+    });
+    
+    // 保存按钮
+    $('#saveBtn').on('click', function() {
+        saveAgent();
+    });
+    
+    // 添加到游戏按钮
+    $('#addToGameBtn').on('click', function() {
+        addAgentToGame();
+    });
+    
+    function generateAgent() {
+        // 获取表单数据
+        const formData = {
+            name: $('#agentName').val().trim(),
+            description: $('#agentDescription').val().trim(),
+            age: $('#agentAge').val(),
+            occupation: $('#agentOccupation').val().trim(),
+            personality: $('#agentPersonality').val().trim(),
+            appearance: $('#agentAppearance').val().trim(),
+            selected_character: $('#selectedCharacter').val()
+        };
+        
+        // 验证必填字段
+        if (!formData.name || !formData.description) {
+            alert('请填写角色名称和描述！');
+            return;
+        }
+        
+        // 隐藏其他面板，显示进度面板
+        $('#resultPanel, #errorPanel').hide();
+        $('#progressPanel').show();
+        $('#generateBtn').prop('disabled', true);
+        
+        // 开始生成流程
+        updateProgress(10, '正在生成角色配置...');
+        
+        // 调用后端API生成角色
+        $.ajax({
+            url: '/api/generate_agent',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify(formData),
+            success: function(response) {
+                if (response.success) {
+                    generatedConfig = response.data.config;
+                    generatedImages = response.data.images;
+                    displayResult(response.data);
+                } else {
+                    showError(response.message || '生成失败，请重试');
+                }
+            },
+            error: function(xhr, status, error) {
+                let errorMsg = '网络错误，请检查连接后重试';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    errorMsg = xhr.responseJSON.message;
+                }
+                showError(errorMsg);
+            },
+            complete: function() {
+                $('#generateBtn').prop('disabled', false);
+                $('#progressPanel').hide();
+            }
+        });
+    }
+    
+    function updateProgress(percent, message) {
+        $('#progressBar').css('width', percent + '%');
+        $('#progressText').text(percent + '%');
+        $('#currentStep').text(message);
+    }
+    
+    function displayResult(data) {
+        // 显示角色信息
+        $('#resultName').text(data.config.name || '未知');
+        $('#resultAge').text(data.config.age || '未知');
+        $('#resultOccupation').text(data.config.occupation || '未知');
+        $('#resultPersonality').text(data.config.personality || '未知');
+        
+        // 显示图片
+        if (data.images.texture) {
+            showImageLoading();
+            $('#agentImage').attr('src', data.images.texture);
+        }
+        
+        // 显示配置文件
+        $('#configPreview').text(JSON.stringify(data.config, null, 2));
+        
+        // 显示结果面板
+        $('#resultPanel').show();
+    }
+    
+    function showImageLoading() {
+        $('#imageLoading').show();
+        $('#imagePlaceholder').hide();
+        $('#imageError').hide();
+    }
+    
+    function showError(message) {
+        $('#errorMessage').text(message);
+        $('#errorPanel').show();
+    }
+    
+    function resetForm() {
+        $('#agentForm')[0].reset();
+        $('#resultPanel, #errorPanel, #progressPanel').hide();
+        generatedConfig = null;
+        generatedImages = null;
+    }
+    
+    function saveAgent() {
+        if (!generatedConfig || !generatedImages) {
+            alert('没有可保存的角色数据！');
+            return;
+        }
+        
+        $('#saveBtn').prop('disabled', true).text('保存中...');
+        
+        $.ajax({
+            url: '/api/save_agent',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                config: generatedConfig,
+                images: generatedImages
+            }),
+            success: function(response) {
+                if (response.success) {
+                    alert('角色保存成功！文件已保存到：' + response.data.folder_path);
+                    // 启用"立即添加到小镇"按钮
+                    $('#addToGameBtn').prop('disabled', false);
+                    resetForm();
+                } else {
+                    alert('保存失败：' + (response.message || '未知错误'));
+                }
+            },
+            error: function(xhr, status, error) {
+                let errorMsg = '保存失败，请重试';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    errorMsg = xhr.responseJSON.message;
+                }
+                alert(errorMsg);
+            },
+            complete: function() {
+                $('#saveBtn').prop('disabled', false).text('保存角色');
+            }
+        });
+    }
+    
+    // 添加角色到游戏函数
+    function addAgentToGame() {
+        if (!generatedConfig) {
+            alert('请先生成并保存角色！');
+            return;
+        }
+        
+        const agentName = generatedConfig.name;
+        if (!agentName) {
+            alert('角色名称不能为空！');
+            return;
+        }
+        
+        $('#addToGameBtn').prop('disabled', true).text('添加中...');
+        
+        $.ajax({
+            url: '/api/add_agent_to_game',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                agent_name: agentName
+            }),
+            success: function(response) {
+                if (response.success) {
+                    alert('角色已成功添加到小镇！\n\n刷新游戏页面即可看到新角色。');
+                    // 可以选择打开游戏页面
+                    if (confirm('是否现在打开游戏页面查看？')) {
+                        window.open('/', '_blank');
+                    }
+                } else {
+                    alert('添加失败：' + response.message);
+                }
+            },
+            error: function(xhr, status, error) {
+                let errorMsg = '添加失败，请重试';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    errorMsg = xhr.responseJSON.message;
+                }
+                alert(errorMsg);
+            },
+            complete: function() {
+                $('#addToGameBtn').prop('disabled', false).text('立即添加到小镇');
+            }
+        });
+    }
+    
+    // 加载角色形象函数
+    function loadCharacterImages() {
+        // 角色形象文件列表
+        const characterFiles = [
+            'armor.png', 'badboy.png', 'brother.png', 'chickenboy.png',
+            'citizen_01.png', 'citizen_02.png', 'citizen_03.png',
+            'father.png', 'father_friend.png', 'father_friend_wife.png', 'father_staff.png',
+            'hero_01.png', 'heroine.png',
+            'littleboy_01.png', 'littleboy_02.png', 'littlegirl_01.png', 'littlegirl_02.png',
+            'noble.png', 'oldman_01.png', 'oldman_02.png', 'oldwoman_01.png', 'oldwoman_02.png',
+            'president.png',
+            'sample_character_01.png', 'sample_character_02.png', 'sample_character_03.png',
+            'sample_character_04.png', 'sample_character_05.png', 'sample_character_06.png',
+            'sample_character_07.png', 'sample_character_08.png', 'sample_character_09.png',
+            'sample_character_10.png', 'sample_character_11.png', 'sample_character_12.png',
+            'sample_character_13.png', 'sample_character_14.png', 'sample_character_15.png',
+            'sample_character_16.png',
+            'shop_keeper.png',
+            'student_01.png', 'student_02.png', 'student_03.png', 'student_04.png',
+            'student_05.png', 'student_06.png', 'student_07.png', 'student_08.png', 'student_09.png',
+            'suit_01.png', 'suit_02.png', 'suit_03.png', 'suit_04.png', 'suit_05.png',
+            '游牧骑兵.png', '游牧骑兵1.png', '牛仔1.png', '白马.png',
+            '轻骑兵2_.png', '骑兵A.png', '骑兵B.png', '骑士2_.png', '骑士A.png'
+        ];
+        
+        const characterGrid = $('#characterGrid');
+        characterGrid.empty();
+        
+        // 每行显示6个角色
+        const itemsPerRow = 6;
+        let currentRow = null;
+        
+        characterFiles.forEach((filename, index) => {
+            if (index % itemsPerRow === 0) {
+                currentRow = $('<div class="row"></div>');
+                characterGrid.append(currentRow);
+            }
+            
+            const characterName = filename.replace('.png', '');
+            const imagePath = '/static/assets/characters/' + filename;
+            
+            const characterItem = $(`
+                <div class="col-md-2 col-sm-3 col-xs-4">
+                    <div class="character-item" data-character="${filename}">
+                        <img src="${imagePath}" alt="${characterName}" class="character-image" 
+                             onerror="this.style.display='none'">
+                        <div class="character-name">${characterName}</div>
+                    </div>
+                </div>
+            `);
+            
+            currentRow.append(characterItem);
+        });
+        
+        // 添加点击事件处理
+        $('.character-item').on('click', function() {
+            // 移除其他选中状态
+            $('.character-item').removeClass('selected');
+            // 添加选中状态
+            $(this).addClass('selected');
+            // 设置隐藏字段值
+            $('#selectedCharacter').val($(this).data('character'));
+        });
+    }
+});
+</script>
+{% endblock js_content %}

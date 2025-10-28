@@ -3,6 +3,9 @@
 import time
 import re
 import requests
+import json
+import os
+from urllib.parse import urlencode
 
 
 class LLMModel:
@@ -76,69 +79,126 @@ class LLMModel:
         return self._meta_responses
 
 
-class OpenAILLMModel(LLMModel):
+class PollinationsLLMModel(LLMModel):
     def setup(self, config):
-        from openai import OpenAI
-
-        return OpenAI(api_key=self._api_key, base_url=self._base_url)
-
-    def _completion(self, prompt, temperature=0.5):
-        messages = [{"role": "user", "content": prompt}]
-        response = self._handle.chat.completions.create(
-            model=self._model, messages=messages, temperature=temperature
-        )
-        if len(response.choices) > 0:
-            return response.choices[0].message.content
-        return ""
-
-
-class OllamaLLMModel(LLMModel):
-    def setup(self, config):
+        self._pai_token = os.getenv('PAI_TOKEN', 'r5bQfseAxxaO7YNc')
         return None
 
-    def ollama_chat(self, messages, temperature):
-        headers = {
-            "Content-Type": "application/json"
-        }
-        params = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": False,
-        }
+    def _completion(self, prompt, temperature=0.5):
+        # 按优先级尝试不同模型：openai-large → gemini → openai → deepseek
+        models = ['openai-large', 'gemini', 'openai', 'deepseek']
+        
+        for model in models:
+            try:
+                messages = [{"role": "user", "content": prompt}]
+                
+                body = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": 8192,
+                    "temperature": temperature,
+                    "stream": False,
+                    "token": self._pai_token
+                }
+                
+                response = requests.post(
+                    url='https://text.pollinations.ai/openai',
+                    headers={
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {self._pai_token}'
+                    },
+                    json=body,
+                    timeout=30
+                )
+                
+                if response.ok:
+                    result = response.json()
+                    if result and 'choices' in result and len(result['choices']) > 0:
+                        content = result['choices'][0]['message']['content']
+                        print(f"Pollinations {model} 成功响应")
+                        return content
+                else:
+                    print(f"Pollinations {model} 失败: HTTP {response.status_code}")
+                    
+            except Exception as e:
+                print(f"Pollinations {model} 异常: {e}")
+                continue
+        
+        # 所有Pollinations模型都失败，抛出异常让上层处理
+        raise Exception("所有Pollinations模型都失败")
 
-        response = requests.post(
-            url=f"{self._base_url}/chat/completions",
-            headers=headers,
-            json=params,
-            stream=False
-        )
-        return response.json()
+
+class GLMLLMModel(LLMModel):
+    def setup(self, config):
+        self._zhipu_api_key = os.getenv('ZHIPUAI_API_KEY', 'c776b1833ad5e38df90756a57b1bcafc.Da0sFSNyQE2BMJEd')
+        return None
 
     def _completion(self, prompt, temperature=0.5):
-        if "qwen3" in self._model and "\n/nothink" not in prompt:
-            # 针对Qwen3模型禁用think，提高推理速度
-            prompt += "\n/nothink"
         messages = [{"role": "user", "content": prompt}]
-        response = self.ollama_chat(messages=messages, temperature=temperature)
-        if response and len(response["choices"]) > 0:
-            ret = response["choices"][0]["message"]["content"]
-            # 从输出结果中过滤掉<think>标签内的文字，以免影响后续逻辑
-            return re.sub(r"<think>.*</think>", "", ret, flags=re.DOTALL)
-        return ""
+        
+        body = {
+            "model": "glm-4-flash-250414",
+            "messages": messages,
+            "max_tokens": 8192,
+            "temperature": temperature,
+            "stream": False
+        }
+        
+        response = requests.post(
+            url='https://open.bigmodel.cn/api/paas/v4/chat/completions',
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self._zhipu_api_key}'
+            },
+            json=body,
+            timeout=30
+        )
+        
+        if response.ok:
+            result = response.json()
+            if result and 'choices' in result and len(result['choices']) > 0:
+                return result['choices'][0]['message']['content']
+        
+        raise Exception(f"GLM API 失败: HTTP {response.status_code}")
+
+
+class HybridLLMModel(LLMModel):
+    """混合LLM模型，优先使用Pollinations，失败时降级到GLM"""
+    
+    def setup(self, config):
+        self._pollinations = PollinationsLLMModel(config)
+        self._glm = GLMLLMModel(config)
+        return None
+    
+    def _completion(self, prompt, temperature=0.5):
+        # 首先尝试Pollinations（按优先级：openai-large → gemini → openai → deepseek）
+        try:
+            return self._pollinations._completion(prompt, temperature)
+        except Exception as e:
+            print(f"Pollinations 服务失败，降级到 GLM: {e}")
+            
+            # 降级到GLM
+            try:
+                result = self._glm._completion(prompt, temperature)
+                print("GLM 服务成功响应")
+                return result
+            except Exception as glm_error:
+                print(f"GLM 服务也失败: {glm_error}")
+                raise Exception("所有AI服务都失败了")
 
 
 def create_llm_model(llm_config):
     """Create llm model"""
 
-    if llm_config["provider"] == "ollama":
-        return OllamaLLMModel(llm_config)
-
-    elif llm_config["provider"] == "openai":
-        return OpenAILLMModel(llm_config)
+    if llm_config["provider"] == "pollinations":
+        return PollinationsLLMModel(llm_config)
+    elif llm_config["provider"] == "glm":
+        return GLMLLMModel(llm_config)
+    elif llm_config["provider"] == "hybrid":
+        return HybridLLMModel(llm_config)
     else:
         raise NotImplementedError(
-            "llm provider {} is not supported".format(llm_config["provider"])
+            "llm provider {} is not supported. Only 'pollinations', 'glm', and 'hybrid' are supported.".format(llm_config["provider"])
         )
     return None
 

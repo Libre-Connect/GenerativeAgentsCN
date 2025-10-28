@@ -925,3 +925,26 @@ class Scratch:
             "callback": _callback,
             "failsafe": self.currently,
         }
+
+    def prompt_generate_image_description(self, scene_description):
+        """生成图片描述的prompt"""
+        prompt = self.build_prompt(
+            "generate_image_prompt",
+            {
+                "scene_description": scene_description,
+            }
+        )
+
+        def _callback(response):
+            # 提取图片描述部分
+            lines = response.strip().split('\n')
+            for line in lines:
+                if line.strip() and not line.startswith('图片描述：') and not line.startswith('要求：') and not line.startswith('-'):
+                    return line.strip()
+            return scene_description  # 如果解析失败，返回原始描述
+
+        return {
+            "prompt": prompt,
+            "callback": _callback,
+            "failsafe": scene_description,
+        }

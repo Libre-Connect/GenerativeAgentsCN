@@ -1,4 +1,10 @@
 <script type="text/javascript">
+	/* eslint-disable */
+	/* 
+	 * This is a Jinja2 template file that contains server-side template syntax.
+	 * IDE linter errors are expected and can be ignored as the syntax will be
+	 * properly rendered by the Flask/Jinja2 template engine on the server side.
+	 */
 	// Initialize variables from Flask context
 	let step = {{ step|tojson }};
 	let step_size = {{ sec_per_step|tojson }} * 1000; // Convert to milliseconds
@@ -29,8 +35,8 @@
 
 	let movement_target = {};
 
-	let finished = false;
-	let paused = false;
+
+
 
 	// Phaser configuration
 	const config = {
@@ -172,25 +178,12 @@
 		posX = 20;
 		posY = 20;
 
-		// Add button: play, pause ...
-		buttonPlay = add_text(this, posX, posY, "[运行]", "#ffffcc");
-		buttonPlay.setInteractive();
-		posX += buttonPlay.width + 10;
 
-		buttonPause = add_text(this, posX, posY, " 暂停 ", "#ffffcc");
-		buttonPause.setInteractive();
-		posX += buttonPause.width + 10;
 
-		buttonShowConversation = add_text(this, posX, posY, "[显示对话]", "#ffffcc");
-		buttonShowConversation.setInteractive();
-		posX += buttonShowConversation.width + 10;
 
-		buttonHideConversation = add_text(this, posX, posY, " 隐藏对话 ", "#ffffcc");
-		buttonHideConversation.setInteractive();
-		posX += buttonHideConversation.width + 10;
 
 		// Show current time
-		currentTime = add_text(this, posX, posY, "", "#ccffcc");
+		currentTime = add_text(this, 20, 20, "", "#ccffcc");
 
 		// Show conversation content
 		textConversation = add_text(this, 20, posY + currentTime.height + 10, " —— ", "#ccffcc");
@@ -275,32 +268,9 @@
 
 	// Update function
 	function update(time, delta) {
-		// Setup play and pause button
-		buttonPlay.on("pointerdown", function() {
-			if (finished) return;
-			buttonPlay.text = "[运行]";
-			buttonPause.text = " 暂停 ";
-			paused = false;
-		});
 
-		buttonPause.on("pointerdown", function() {
-			if (finished) return;
-			buttonPlay.text = " 运行 ";
-			buttonPause.text = "[暂停]";
-			paused = true;
-		});
 
-		buttonShowConversation.on("pointerdown", function() {
-			buttonShowConversation.text = "[显示对话]";
-			buttonHideConversation.text = " 隐藏对话 ";
-			textConversation.setVisible(true);
-		});
 
-		buttonHideConversation.on("pointerdown", function() {
-			buttonShowConversation.text = " 显示对话 ";
-			buttonHideConversation.text = "[隐藏对话]";
-			textConversation.setVisible(false);
-		});
 
 		// Move camera
 		const camera_speed = 400;
@@ -318,16 +288,9 @@
 			player.body.setVelocityY(camera_speed);
 		}
 
-		let curr_focused_persona = document.getElementById("temp_focus").textContent;
-		if (curr_focused_persona != "") {
-			player.body.x = personas[curr_focused_persona].body.x;
-			player.body.y = personas[curr_focused_persona].body.y;
-			document.getElementById("temp_focus").innerHTML = "";
-		}
 
-		if (finished || paused) {
-			return;
-		}
+
+
 
 		curr_datetime = new Date(start_datetime.getTime());
 		curr_year = curr_datetime.getFullYear().toString().padStart(4, "0");
@@ -360,13 +323,10 @@
 						act = act.length > 25 ? act.substring(0, 20)+"..." : act;
 						pronunciatios[curr_persona_name].setText(curr_persona_name + ": " + act);
 
-						// Updating the status of each personas
-						document.getElementById("agent_desc__"+curr_persona_name).innerHTML = all_movement["description"][curr_persona_name]["currently"];
-						document.getElementById("current_action__"+curr_persona_name).innerHTML = action;
-						document.getElementById("target_address__"+curr_persona_name).innerHTML = all_movement[step][curr_persona_name.replace("_", " ")]["location"];
+
 					}
 
-					if (execute_count > 0) {
+					if (execute_count > 0 && movement_target[curr_persona_name]) {
 						if (curr_persona.body.x < movement_target[curr_persona_name][0]) {
 							curr_persona.body.x += movement_speed;
 							anims_direction = "r";
@@ -416,10 +376,6 @@
 				else if (pre_anims_direction_dict[curr_persona_name] == "u") curr_persona.setTexture(curr_persona_name, "up");
 				else if (pre_anims_direction_dict[curr_persona_name] == "d") curr_persona.setTexture(curr_persona_name, "down");
 				curr_persona.anims.stop();
-
-				finished = true;
-				buttonPlay.text = "[回放结束]";
-				buttonPause.setVisible(false);
 			}
 		}
 
@@ -427,8 +383,10 @@
 			for (let i = 0; i < Object.keys(personas).length; i++) {
 				let curr_persona_name = Object.keys(personas)[i];
 				let curr_persona = personas[curr_persona_name];
-				curr_persona.body.x = movement_target[curr_persona_name][0];
-				curr_persona.body.y = movement_target[curr_persona_name][1];
+				if (movement_target[curr_persona_name]) {
+					curr_persona.body.x = movement_target[curr_persona_name][0];
+					curr_persona.body.y = movement_target[curr_persona_name][1];
+				}
 			}
 			execute_count = execute_count_max + 1;
 			step = step + 1;
@@ -439,4 +397,229 @@
 
 		execute_count -= 1;
 	}
+
+	// ========== 实时模拟控制功能 ==========
+	
+	// WebSocket连接
+	let socket = null;
+	let isSimulationRunning = false;
+	let simulationStep = 0;
+	
+	// 初始化WebSocket连接
+	function initializeSocket() {
+		socket = io();
+		
+		socket.on('connect', function() {
+			console.log('Connected to server');
+			updateConnectionStatus(true, '已连接到服务器');
+			requestCurrentState();
+		});
+		
+		socket.on('disconnect', function() {
+			console.log('Disconnected from server');
+			updateConnectionStatus(false, '与服务器断开连接');
+		});
+		
+		socket.on('simulation_update', function(data) {
+			console.log('Received simulation update:', data);
+			updateSimulationFromServer(data);
+		});
+		
+		socket.on('simulation_status', function(data) {
+			console.log('Simulation status:', data);
+			updateSimulationStatus(data);
+		});
+	}
+	
+	// 更新连接状态
+	function updateConnectionStatus(connected, message) {
+		const statusDiv = document.getElementById('connectionStatus');
+		const textSpan = document.getElementById('connectionText');
+		
+		if (connected) {
+			statusDiv.className = 'alert alert-success';
+			statusDiv.style.display = 'block';
+			textSpan.textContent = message;
+			setTimeout(() => {
+				statusDiv.style.display = 'none';
+			}, 3000);
+		} else {
+			statusDiv.className = 'alert alert-danger';
+			statusDiv.style.display = 'block';
+			textSpan.textContent = message;
+		}
+	}
+	
+	// 请求当前状态
+	function requestCurrentState() {
+		if (socket) {
+			socket.emit('request_current_state');
+		}
+	}
+	
+	// 从服务器更新模拟数据
+	function updateSimulationFromServer(data) {
+		if (data.agents) {
+			// 更新角色位置和状态
+			for (const agentName in data.agents) {
+				const agentData = data.agents[agentName];
+				if (personas[agentName] && agentData.position) {
+					// 更新角色位置
+					const persona = personas[agentName];
+					persona.body.x = agentData.position[0] * tile_width;
+					persona.body.y = agentData.position[1] * tile_width;
+					
+					// 更新对话内容
+					if (agentData.conversation && pronunciatios[agentName]) {
+						pronunciatios[agentName].setText(agentData.conversation);
+					}
+				}
+			}
+		}
+		
+		// 更新时间
+		if (data.current_time) {
+			const gameTime = new Date(data.current_time);
+			currentTime.setText(gameTime.toLocaleTimeString("zh-CN", datetime_options));
+		}
+		
+		// 更新步数
+		if (data.step !== undefined) {
+			simulationStep = data.step;
+			document.getElementById('stepCount').textContent = simulationStep;
+		}
+	}
+	
+	// 更新模拟状态
+	function updateSimulationStatus(data) {
+		const statusText = document.getElementById('statusText');
+		const startBtn = document.getElementById('startSimBtn');
+		const pauseBtn = document.getElementById('pauseSimBtn');
+		const stopBtn = document.getElementById('stopSimBtn');
+		const strideInput = document.getElementById('strideInput');
+		
+		isSimulationRunning = data.running;
+		
+		if (data.running) {
+			if (data.paused) {
+				statusText.textContent = '已暂停';
+				startBtn.disabled = true;
+				pauseBtn.disabled = false;
+				pauseBtn.innerHTML = '<span class="glyphicon glyphicon-play"></span> 继续';
+				stopBtn.disabled = false;
+				strideInput.disabled = true;
+			} else {
+				statusText.textContent = '运行中';
+				startBtn.disabled = true;
+				pauseBtn.disabled = false;
+				pauseBtn.innerHTML = '<span class="glyphicon glyphicon-pause"></span> 暂停';
+				stopBtn.disabled = false;
+				strideInput.disabled = true;
+			}
+		} else {
+			statusText.textContent = '未启动';
+			startBtn.disabled = false;
+			pauseBtn.disabled = true;
+			pauseBtn.innerHTML = '<span class="glyphicon glyphicon-pause"></span> 暂停';
+			stopBtn.disabled = true;
+			strideInput.disabled = false;
+		}
+		
+		if (data.step !== undefined) {
+			simulationStep = data.step;
+			document.getElementById('stepCount').textContent = simulationStep;
+		}
+	}
+	
+	// 开始模拟
+	function startSimulation() {
+		const stride = parseInt(document.getElementById('strideInput').value) || 10;
+		
+		fetch('/api/simulation/start', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({ stride: stride })
+		})
+		.then(response => response.json())
+		.then(data => {
+			if (data.success) {
+				console.log('Simulation started successfully');
+			} else {
+				alert('启动模拟失败: ' + data.message);
+			}
+		})
+		.catch(error => {
+			console.error('Error starting simulation:', error);
+			alert('启动模拟时发生错误');
+		});
+	}
+	
+	// 暂停/继续模拟
+	function pauseSimulation() {
+		fetch('/api/simulation/pause', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			}
+		})
+		.then(response => response.json())
+		.then(data => {
+			if (data.success) {
+				console.log('Simulation pause/resume successful');
+			} else {
+				alert('暂停/继续模拟失败: ' + data.message);
+			}
+		})
+		.catch(error => {
+			console.error('Error pausing simulation:', error);
+			alert('暂停/继续模拟时发生错误');
+		});
+	}
+	
+	// 停止模拟
+	function stopSimulation() {
+		fetch('/api/simulation/stop', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+			}
+		})
+		.then(response => response.json())
+		.then(data => {
+			if (data.success) {
+				console.log('Simulation stopped successfully');
+			} else {
+				alert('停止模拟失败: ' + data.message);
+			}
+		})
+		.catch(error => {
+			console.error('Error stopping simulation:', error);
+			alert('停止模拟时发生错误');
+		});
+	}
+	
+	// 页面加载完成后初始化
+	document.addEventListener('DOMContentLoaded', function() {
+		// 初始化WebSocket连接
+		initializeSocket();
+		
+		// 绑定按钮事件
+		document.getElementById('startSimBtn').addEventListener('click', startSimulation);
+		document.getElementById('pauseSimBtn').addEventListener('click', pauseSimulation);
+		document.getElementById('stopSimBtn').addEventListener('click', stopSimulation);
+		
+		// 定期检查模拟状态
+		setInterval(() => {
+			fetch('/api/simulation/status')
+				.then(response => response.json())
+				.then(data => {
+					updateSimulationStatus(data);
+				})
+				.catch(error => {
+					console.error('Error checking simulation status:', error);
+				});
+		}, 2000); // 每2秒检查一次状态
+	});
 </script>

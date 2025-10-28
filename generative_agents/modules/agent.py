@@ -7,6 +7,7 @@ import datetime
 
 from modules import memory, prompt, utils
 from modules.model.llm_model import create_llm_model
+from modules.model.image_model import create_image_model
 from modules.memory.associate import Concept
 
 
@@ -16,6 +17,7 @@ class Agent:
         self.maze = maze
         self.conversation = conversation
         self._llm = None
+        self._image_model = None
         self.logger = logger
 
         # agent config
@@ -88,6 +90,8 @@ class Agent:
     def reset(self):
         if not self._llm:
             self._llm = create_llm_model(self.think_config["llm"])
+        if not self._image_model:
+            self._image_model = create_image_model({"provider": "hybrid"})
 
     def completion(self, func_hint, *args, **kwargs):
         assert hasattr(
@@ -683,6 +687,50 @@ class Agent:
         if not self._llm:
             return False
         return self._llm.is_available()
+
+    def image_model_available(self):
+        if not self._image_model:
+            return False
+        return self._image_model.is_available()
+
+    def generate_image(self, prompt, **kwargs):
+        """生成图片"""
+        if not self.image_model_available():
+            self.logger.warning(f"{self.name} 图片生成模型不可用")
+            return None
+        
+        try:
+            self.logger.info(f"{self.name} 正在生成图片: {prompt}")
+            result = self._image_model.generate_image(prompt, **kwargs)
+            self.logger.info(f"{self.name} 图片生成成功: {result.get('url', 'N/A')}")
+            return result
+        except Exception as e:
+            self.logger.error(f"{self.name} 图片生成失败: {e}")
+            return None
+
+    def describe_and_generate_image(self, scene_description=None):
+        """根据当前场景描述生成图片"""
+        if not self.image_model_available():
+            return None
+            
+        if not scene_description:
+            # 生成当前场景的描述
+            current_event = self.get_event()
+            location = "，".join(current_event.address)
+            activity = self.scratch.currently
+            scene_description = f"{self.name}在{location}{activity}"
+        
+        # 使用LLM优化图片描述
+        if self.llm_available():
+            try:
+                prompt_data = self.scratch.prompt_generate_image_description(scene_description)
+                response = self._llm_model.completion(prompt_data["prompt"])
+                optimized_description = prompt_data["callback"](response)
+                scene_description = optimized_description
+            except Exception as e:
+                self.logger.warning(f"{self.name} 优化图片描述失败: {e}")
+        
+        return self.generate_image(scene_description)
 
     def to_dict(self, with_action=True):
         info = {

@@ -11,9 +11,9 @@
         },
         "think": {
             "llm": {
-                "provider": "ollama",
-                "model": "qwen3:8b-q4_K_M",
-                "base_url": "http://127.0.0.1:11434/v1",
+                "provider": "hybrid",
+                "model": "openai-large",
+                "base_url": "https://text.pollinations.ai",
                 "api_key": ""
             },
             "interval": 1000,
@@ -22,10 +22,8 @@
         "chat_iter": 4,
         "associate": {
             "embedding": {
-                "provider": "ollama",
-                "model": "bge-m3:latest",
-                "base_url": "http://127.0.0.1:11434",
-                "api_key": ""
+                "provider": "hugging_face",
+                "model": "sentence-transformers/all-MiniLM-L6-v2"
             },
             "retention": 8
         }
