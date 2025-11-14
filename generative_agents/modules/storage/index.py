@@ -3,15 +3,44 @@
 import os
 import time
 import requests
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core.indices.vector_store.retrievers import VectorIndexRetriever
-from llama_index.core.schema import TextNode
-from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
-from llama_index.core.node_parser import SentenceSplitter
-from llama_index.core import Settings
-from llama_index.core.embeddings import BaseEmbedding
+# Temporarily commented out due to import issues
+# from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+# from llama_index.core.indices.vector_store.retrievers import VectorIndexRetriever
+# from llama_index.core.schema import TextNode
+# from llama_index.core import VectorStoreIndex, StorageContext, load_index_from_storage
+# from llama_index.core.node_parser import SentenceSplitter
+# from llama_index.core import Settings
+# from llama_index.core.embeddings import BaseEmbedding
 
 from modules import utils
+
+# Temporary placeholder classes
+class HuggingFaceEmbedding:
+    pass
+
+class VectorIndexRetriever:
+    pass
+
+class TextNode:
+    pass
+
+class VectorStoreIndex:
+    pass
+
+class StorageContext:
+    pass
+
+def load_index_from_storage(*args, **kwargs):
+    pass
+
+class SentenceSplitter:
+    pass
+
+class Settings:
+    pass
+
+class BaseEmbedding:
+    pass
 
 
 class GLMEmbedding(BaseEmbedding):

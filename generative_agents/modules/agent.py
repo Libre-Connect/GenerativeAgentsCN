@@ -8,17 +8,20 @@ import datetime
 from modules import memory, prompt, utils
 from modules.model.llm_model import create_llm_model
 from modules.model.image_model import create_image_model
+from modules.economy.economy import Inventory, Wallet
 from modules.memory.associate import Concept
+from modules.terrain.terrain_development import ResourceType
 
 
 class Agent:
-    def __init__(self, config, maze, conversation, logger):
+    def __init__(self, config, maze, conversation, logger, game=None):
         self.name = config["name"]
         self.maze = maze
         self.conversation = conversation
         self._llm = None
         self._image_model = None
         self.logger = logger
+        self.game = game  # 游戏实例，用于访问环境管理器
 
         # agent config
         self.percept_config = config["percept"]
@@ -40,6 +43,10 @@ class Agent:
         status = {"poignancy": 0}
         self.status = utils.update_dict(status, config.get("status", {}))
         self.plan = config.get("plan", {})
+
+        # 经济与物品系统：基础库存与钱包
+        self.inventory: Inventory = Inventory()
+        self.wallet: Wallet = Wallet(balance=100.0)
 
         # record
         self.last_record = utils.get_timer().daily_duration()
@@ -121,6 +128,10 @@ class Agent:
         events = self.move(status["coord"], status.get("path"))
         plan, _ = self.make_schedule()
 
+        # 获取天气数据和影响
+        weather_data = self.get_weather_data()
+        weather_effects = self.get_weather_effects()
+
         if (plan["describe"] == "sleeping" or "睡" in plan["describe"]) and self.is_awake():
             self.logger.info("{} is going to sleep...".format(self.name))
             address = self.spatial.find_address("睡觉", as_list=True)
@@ -141,11 +152,12 @@ class Agent:
             )
         if self.is_awake():
             self.percept()
-            self.make_plan(agents)
+            # 在制定计划时考虑天气因素
+            self.make_plan(agents, weather_data=weather_data, weather_effects=weather_effects)
             self.reflect()
         else:
             if self.action.finished():
-                self.action = self._determine_action()
+                self.action = self._determine_action(weather_data=weather_data, weather_effects=weather_effects)
 
         emojis = {}
         if self.action:
@@ -194,6 +206,11 @@ class Agent:
     def make_schedule(self):
         if not self.schedule.scheduled():
             self.logger.info("{} is making schedule...".format(self.name))
+            
+            # 获取天气数据以影响日程安排
+            weather_data = self.get_weather_data()
+            weather_effects = self.get_weather_effects()
+            
             # update currently
             if self.associate.index.nodes_num > 0:
                 self.associate.cleanup_index()
@@ -214,7 +231,12 @@ class Agent:
             # make init schedule
             self.schedule.create = utils.get_timer().get_date()
             wake_up = self.completion("wake_up")
-            init_schedule = self.completion("schedule_init", wake_up)
+            
+            # 根据是否有天气数据选择不同的prompt
+            if weather_data and weather_effects:
+                init_schedule = self.completion("schedule_init_weather", wake_up, weather_data, weather_effects)
+            else:
+                init_schedule = self.completion("schedule_init", wake_up)
             # make daily schedule
             hours = [f"{i}:00" for i in range(24)]
             # seed = [(h, "sleeping") for h in hours[:wake_up]]
@@ -320,13 +342,14 @@ class Agent:
             "{} percept {}/{} concepts".format(self.name, valid_num, len(self.concepts))
         )
 
-    def make_plan(self, agents):
-        if self._reaction(agents):
+    def make_plan(self, agents, weather_data=None, weather_effects=None):
+        # 考虑天气对反应的影响
+        if self._reaction(agents, weather_effects=weather_effects):
             return
         if self.path:
             return
         if self.action.finished():
-            self.action = self._determine_action()
+            self.action = self._determine_action(weather_data=weather_data, weather_effects=weather_effects)
 
     # create action && object events
     def make_event(self, subject, describe, address):
@@ -429,10 +452,15 @@ class Agent:
         target = min(pathes, key=lambda p: len(pathes[p]))
         return pathes[target][1:]
 
-    def _determine_action(self):
+    def _determine_action(self, weather_data=None, weather_effects=None):
         self.logger.info("{} is determining action...".format(self.name))
         plan, de_plan = self.schedule.current_plan()
         describes = [plan["describe"], de_plan["describe"]]
+        
+        # 根据天气调整行动描述
+        if weather_data and weather_effects:
+            describes = self._adjust_action_for_weather(describes, weather_data, weather_effects)
+        
         address = self.spatial.find_address(describes[0], as_list=True)
         if not address:
             tile = self.get_tile()
@@ -469,9 +497,17 @@ class Agent:
             start=utils.get_timer().daily_time(de_plan["start"]),
         )
 
-    def _reaction(self, agents=None, ignore_words=None):
+    def _reaction(self, agents=None, ignore_words=None, weather_effects=None):
         focus = None
         ignore_words = ignore_words or ["空闲"]
+        
+        # 根据天气调整反应倾向
+        if weather_effects:
+            social_modifier = weather_effects.get("social_activity_modifier", 1.0)
+            if social_modifier < 0.8:
+                # 天气不好时，减少社交反应
+                if random.random() > social_modifier:
+                    return False
 
         def _focus(concept):
             return concept.event.subject in agents
@@ -683,6 +719,125 @@ class Agent:
             return False
         return True
 
+    def get_weather_data(self):
+        """获取当前天气数据"""
+        if self.game and hasattr(self.game, 'environment_manager'):
+            return self.game.environment_manager.get_environment_data()
+        return None
+
+    def get_weather_effects(self):
+        """获取天气对Agent行为的影响"""
+        weather_data = self.get_weather_data()
+        if not weather_data:
+            return {}
+        
+        weather_info = weather_data.get("weather", {})
+        return weather_info.get("effects", {})
+
+    def _adjust_action_for_weather(self, describes, weather_data, weather_effects):
+        """根据天气调整行动描述"""
+        if not weather_data or not weather_effects:
+            return describes
+        
+        weather_type = weather_data.get("weather", {}).get("type", "sunny")
+        social_modifier = weather_effects.get("social_activity_modifier", 1.0)
+        movement_modifier = weather_effects.get("movement_speed_modifier", 1.0)
+        mood_modifier = weather_effects.get("mood_modifier", 0.0)
+        
+        adjusted_describes = describes.copy()
+        
+        # 根据天气类型调整行动
+        if weather_type in ["rainy", "stormy"]:
+            # 雨天或暴风雨天气，倾向于室内活动
+            for i, desc in enumerate(adjusted_describes):
+                if "户外" in desc or "外面" in desc or "散步" in desc:
+                    if weather_type == "stormy":
+                        adjusted_describes[i] = desc.replace("户外", "室内").replace("外面", "家里").replace("散步", "在家休息")
+                    else:
+                        adjusted_describes[i] = desc.replace("散步", "在室内活动")
+        
+        elif weather_type == "snowy":
+            # 雪天，调整户外活动
+            for i, desc in enumerate(adjusted_describes):
+                if "散步" in desc:
+                    adjusted_describes[i] = desc.replace("散步", "欣赏雪景")
+        
+        elif weather_type == "foggy":
+            # 雾天，减少户外活动
+            for i, desc in enumerate(adjusted_describes):
+                if "户外" in desc:
+                    adjusted_describes[i] = desc.replace("户外", "室内")
+        
+        # 根据社交活动修正因子调整
+        if social_modifier < 0.8:
+            for i, desc in enumerate(adjusted_describes):
+                if "聚会" in desc or "社交" in desc:
+                    adjusted_describes[i] = desc.replace("聚会", "独处").replace("社交", "个人活动")
+        
+        return adjusted_describes
+
+    def _adjust_schedule_for_weather(self, schedule, weather_data, weather_effects):
+        """根据天气调整日程安排"""
+        if not weather_data or not weather_effects:
+            return schedule
+        
+        weather_type = weather_data.get("weather", {}).get("type", "sunny")
+        social_modifier = weather_effects.get("social_activity_modifier", 1.0)
+        movement_modifier = weather_effects.get("movement_speed_modifier", 1.0)
+        mood_modifier = weather_effects.get("mood_modifier", 0.0)
+        
+        adjusted_schedule = []
+        
+        for activity in schedule:
+            adjusted_activity = activity
+            
+            # 根据天气类型调整活动
+            if weather_type in ["rainy", "stormy"]:
+                # 雨天或暴风雨，将户外活动改为室内活动
+                if "散步" in activity:
+                    adjusted_activity = activity.replace("散步", "在家阅读")
+                elif "户外" in activity:
+                    adjusted_activity = activity.replace("户外", "室内")
+                elif "公园" in activity:
+                    adjusted_activity = activity.replace("公园", "家里")
+                elif "运动" in activity and "室内" not in activity:
+                    adjusted_activity = activity.replace("运动", "室内运动")
+            
+            elif weather_type == "snowy":
+                # 雪天，调整户外活动
+                if "散步" in activity:
+                    adjusted_activity = activity.replace("散步", "欣赏雪景")
+                elif "运动" in activity and "室内" not in activity:
+                    adjusted_activity = activity.replace("运动", "室内运动")
+            
+            elif weather_type == "foggy":
+                # 雾天，减少户外活动
+                if "户外" in activity:
+                    adjusted_activity = activity.replace("户外", "室内")
+                elif "开车" in activity:
+                    adjusted_activity = activity.replace("开车", "在家")
+            
+            # 根据社交活动修正因子调整
+            if social_modifier < 0.8:
+                if "聚会" in activity:
+                    adjusted_activity = activity.replace("聚会", "独处时光")
+                elif "拜访" in activity:
+                    adjusted_activity = activity.replace("拜访", "在家休息")
+                elif "社交" in activity:
+                    adjusted_activity = activity.replace("社交", "个人活动")
+            
+            # 根据心情修正因子调整
+            if mood_modifier < -0.2:
+                # 心情不好时，倾向于安静的活动
+                if "派对" in activity:
+                    adjusted_activity = activity.replace("派对", "安静地休息")
+                elif "热闹" in activity:
+                    adjusted_activity = activity.replace("热闹", "安静")
+            
+            adjusted_schedule.append(adjusted_activity)
+        
+        return adjusted_schedule
+
     def llm_available(self):
         if not self._llm:
             return False
@@ -739,7 +894,211 @@ class Agent:
             "associate": self.associate.to_dict(),
             "chats": self.chats,
             "currently": self.scratch.currently,
+            "wallet": {"currency": self.wallet.currency.value, "balance": self.wallet.balance},
+            "inventory": {
+                "materials": {rt.value: amt for rt, amt in self.inventory.materials.items()},
+                "items": {it.value: cnt for it, cnt in self.inventory.items.items()},
+            },
         }
         if with_action:
             info.update({"action": self.action.to_dict()})
         return info
+    
+    # ==================== AI建造和经济决策功能 ====================
+    
+    def consider_building(self, terrain_engine, building_decision_engine, agent_coord=None):
+        """
+        考虑是否需要建造
+        
+        Args:
+            terrain_engine: 地形引擎
+            building_decision_engine: 建造决策引擎
+            agent_coord: Agent当前坐标（可选）
+        
+        Returns:
+            建造决策或None
+        """
+        if not hasattr(self, '_last_building_check'):
+            self._last_building_check = 0
+        
+        current_time = utils.get_timer().daily_duration()
+        
+        # 每小时最多考虑一次建造
+        if current_time - self._last_building_check < 60:
+            return None
+        
+        self._last_building_check = current_time
+        
+        # 转换库存为ResourceType格式
+        agent_resources = {}
+        for resource_type, amount in self.inventory.materials.items():
+            agent_resources[resource_type] = amount
+        
+        # 分析建造意图
+        decision = building_decision_engine.analyze_agent_building_intention(
+            agent_id=self.name,
+            agent_resources=agent_resources,
+            agent_money=self.wallet.balance,
+            agent_coord=agent_coord
+        )
+        
+        return decision
+    
+    def execute_building_decision(self, decision, terrain_engine, building_decision_engine):
+        """
+        执行建造决策
+        
+        Args:
+            decision: 建造决策
+            terrain_engine: 地形引擎
+            building_decision_engine: 建造决策引擎
+        
+        Returns:
+            执行结果
+        """
+        # 转换库存为ResourceType格式
+        agent_resources = {}
+        for resource_type, amount in self.inventory.materials.items():
+            agent_resources[resource_type] = amount
+        
+        # 执行建造
+        result = building_decision_engine.execute_building_decision(
+            agent_id=self.name,
+            decision=decision,
+            consume_agent_resources=True,  # 从Agent资源扣除
+            agent_resources=agent_resources
+        )
+        
+        # 如果成功，更新Agent的库存
+        if result.get("status") == "success":
+            cost = decision.get("cost", {})
+            for resource_type, amount in cost.items():
+                if resource_type in self.inventory.materials:
+                    self.inventory.materials[resource_type] -= amount
+            
+            self.logger.info(
+                f"{self.name} 建造了 {decision['building_type'].value} "
+                f"在位置 {decision['location']}，原因：{decision['reason']}"
+            )
+            
+            # 添加到记忆
+            event = memory.Event(
+                self.name,
+                "建造了",
+                decision['building_type'].value,
+                describe=f"{self.name} 建造了 {decision['building_type'].value}：{decision['reason']}",
+                address=self.get_tile().get_address()
+            )
+            self._add_concept("event", event)
+        
+        return result
+    
+    def consider_economic_action(self, economy_engine, economy_behavior_engine, other_agents):
+        """
+        考虑经济行为
+        
+        Args:
+            economy_engine: 经济引擎
+            economy_behavior_engine: 经济行为引擎
+            other_agents: 其他Agent列表
+        
+        Returns:
+            经济行动或None
+        """
+        if not hasattr(self, '_last_economy_check'):
+            self._last_economy_check = 0
+        
+        current_time = utils.get_timer().daily_duration()
+        
+        # 每30分钟最多考虑一次经济行为
+        if current_time - self._last_economy_check < 30:
+            return None
+        
+        self._last_economy_check = current_time
+        
+        # 分析经济机会
+        opportunity = economy_behavior_engine.analyze_economic_opportunity(
+            agent_id=self.name,
+            inventory=self.inventory,
+            wallet=self.wallet,
+            other_agents=other_agents
+        )
+        
+        return opportunity
+    
+    def execute_economic_action(self, action, economy_behavior_engine):
+        """
+        执行经济行动
+        
+        Args:
+            action: 经济行动
+            economy_behavior_engine: 经济行为引擎
+        
+        Returns:
+            执行结果
+        """
+        result = economy_behavior_engine.execute_economic_action(
+            agent_id=self.name,
+            action=action
+        )
+        
+        if result.get("status") == "success":
+            action_type = action.get("behavior_type")
+            reason = action.get("reason", "")
+            
+            self.logger.info(
+                f"{self.name} 执行了经济行为 {action_type}：{reason}"
+            )
+            
+            # 添加到记忆
+            event = memory.Event(
+                self.name,
+                "进行了",
+                action_type,
+                describe=f"{self.name} {reason}",
+                address=self.get_tile().get_address()
+            )
+            self._add_concept("event", event)
+        
+        return result
+    
+    def gather_resources_from_location(self, terrain_engine):
+        """
+        从当前位置采集资源
+        
+        Args:
+            terrain_engine: 地形引擎
+        
+        Returns:
+            采集到的资源
+        """
+        # 获取当前位置的地形瓦片
+        tile_x = self.coord[0] // 32  # 假设每个瓦片32像素
+        tile_y = self.coord[1] // 32
+        
+        tile = terrain_engine.get_tile(tile_x, tile_y)
+        if not tile:
+            return {}
+        
+        gathered = {}
+        
+        # 根据地形类型采集资源
+        for resource_type, amount in tile.resources.items():
+            if amount > 0:
+                # 采集一小部分资源（1-5%）
+                gather_amount = amount * random.uniform(0.01, 0.05)
+                gathered[resource_type] = gather_amount
+                
+                # 添加到Agent的库存
+                self.inventory.add_material(resource_type, gather_amount)
+                
+                # 从瓦片扣除
+                tile.resources[resource_type] = max(0, amount - gather_amount)
+        
+        if gathered:
+            self.logger.info(
+                f"{self.name} 采集了资源：" + 
+                ", ".join(f"{rt.value}: {amt:.1f}" for rt, amt in gathered.items())
+            )
+        
+        return gathered

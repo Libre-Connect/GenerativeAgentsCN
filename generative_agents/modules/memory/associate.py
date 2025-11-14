@@ -1,13 +1,27 @@
 """generative_agents.memory.associate"""
 
 import datetime
-from llama_index.core.retrievers import BaseRetriever
-from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
-from llama_index.core.indices.vector_store.retrievers import VectorIndexRetriever
+# Temporarily commented out due to import issues
+# from llama_index.core.retrievers import BaseRetriever
+# from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
+# from llama_index.core.indices.vector_store.retrievers import VectorIndexRetriever
 
 from modules.storage.index import LlamaIndex
 from modules import utils
 from .event import Event
+
+# Temporary placeholder classes
+class BaseRetriever:
+    pass
+
+class MetadataFilters:
+    pass
+
+class ExactMatchFilter:
+    pass
+
+class VectorIndexRetriever:
+    pass
 
 
 class Concept:

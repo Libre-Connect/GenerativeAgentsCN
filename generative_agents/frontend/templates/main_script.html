@@ -5,23 +5,34 @@
 	 * IDE linter errors are expected and can be ignored as the syntax will be
 	 * properly rendered by the Flask/Jinja2 template engine on the server side.
 	 */
-	// Initialize variables from Flask context
-	let step = {{ step|tojson }};
-	let step_size = {{ sec_per_step|tojson }} * 1000; // Convert to milliseconds
-	let zoom = {{ zoom|tojson }};
+	// Initialize variables from Flask context (wrap Jinja JSON in a string to satisfy static analyzers)
+	const FLASK_CTX_JSON = `{
+		"step": {{ step|tojson }},
+		"sec_per_step": {{ sec_per_step|tojson }},
+		"zoom": {{ zoom|tojson }},
+		"play_speed": {{ play_speed|tojson }},
+		"all_movement": {{ all_movement|tojson }},
+		"start_datetime": {{ start_datetime|tojson }},
+		"persona_init_pos": {{ persona_init_pos|tojson }}
+	}`;
+	const FLASK = JSON.parse(FLASK_CTX_JSON);
+
+	let step = FLASK.step;
+	let step_size = FLASK.sec_per_step * 1000; // Convert to milliseconds
+	let zoom = FLASK.zoom;
 	if (zoom <= 0) zoom = document.documentElement.clientWidth / 4400;
 
 	let tile_width = 32;
-	let movement_speed = {{ play_speed|tojson }};
+	let movement_speed = FLASK.play_speed;
 	let execute_count_max = tile_width / movement_speed;
 	let execute_count = execute_count_max;
-	let all_movement = {{ all_movement|tojson }};
+	let all_movement = FLASK.all_movement;
 
 	let datetime_options = { weekday: "long", year: "numeric", month: "long", day: "numeric" };
-	let start_datetime = new Date(Date.parse({{ start_datetime|tojson }}));
+	let start_datetime = new Date(Date.parse(FLASK.start_datetime));
 
 	// Persona related variables
-	let persona_names = {{ persona_init_pos|tojson }};
+	let persona_names = FLASK.persona_init_pos;
 	var spawn_tile_loc = {};
 	for (var key in persona_names) {
 		spawn_tile_loc[key] = persona_names[key];
@@ -29,11 +40,26 @@
 
 	var personas = {};
 	var pronunciatios = {};
+	var nameLabels = {};
 	let anims_direction;
 	let pre_anims_direction;
 	let pre_anims_direction_dict = {};
 
 	let movement_target = {};
+	let currentTime;
+
+	// 自动摄像机巡航与建造配置
+	let autoCameraEnabled = true;
+	let autoBuildEnabled = true;
+	let autoMoveSeconds = 12;
+	let autoReturnSeconds = 8;
+	let autoState = 'idle_base'; // idle_base | moving_out | at_target | moving_back
+	let autoNextActionAt = performance.now() + autoMoveSeconds * 1000;
+	let autoBasePos = { x: 2440, y: 500 };
+	let autoTargetPos = null;
+	let sceneRef = null;
+	let mapRef = null;
+	let layersRef = {};
 
 
 
@@ -41,12 +67,9 @@
 	// Phaser configuration
 	const config = {
 		type: Phaser.AUTO,
-		// width: 4480,
-		// height: 3200,
-        width: document.documentElement.clientWidth / zoom,
-        height: document.documentElement.clientHeight / zoom,
+		width: 4480,
+		height: 3200,
 		parent: "game-container",
-        mode: Phaser.Scale.FIT,
 		pixelArt: true,
 		physics: {
 			default: "arcade",
@@ -60,6 +83,8 @@
 			update: update
 		},
 		scale: {
+			mode: Phaser.Scale.FIT,
+			autoCenter: Phaser.Scale.CENTER_BOTH,
 			zoom: zoom
 		}
 	};
@@ -91,15 +116,19 @@
 		this.load.image("CuteRPG_Desert_B", "static/assets/village/tilemap/CuteRPG_Desert_B.png");
 		this.load.image("CuteRPG_Forest_C", "static/assets/village/tilemap/CuteRPG_Forest_C.png");
 
-		// Load tilemap JSON
-		this.load.tilemapTiledJSON("map", "static/assets/village/tilemap/tilemap.json");
+		// 建筑图集（用于放置真实建筑瓦片）
+		this.load.image("AI_Buildings", "static/assets/village/tilemap/AI_Buildings.png");
 
-		this.load.atlas("atlas", "static/assets/village/agents/伊莎贝拉/texture.png", filename="static/assets/village/agents/sprite.json");
+		// Load tilemap JSON
+		this.load.tilemapTiledJSON("map", "static/assets/village/tilemap/tilemap_patched.json");
+
+		// Load a default atlas (example persona)
+		this.load.atlas("atlas", "static/assets/village/agents/伊莎贝拉/texture.png", "static/assets/village/agents/sprite.json");
 
 		// Load persona atlases
 		for (var p in persona_names) {
-			image_static = "static/assets/village/agents/" + p + "/texture.png";
-			this.load.atlas(p, image_static, filename="static/assets/village/agents/sprite.json");
+			let image_static = "static/assets/village/agents/" + p + "/texture.png";
+			this.load.atlas(p, image_static, "static/assets/village/agents/sprite.json");
 		}
 	}
 
@@ -149,11 +178,26 @@
 
 		const canvas = game.canvas;
 		canvas.addEventListener("wheel", (event) => {
-			event.stopPropagation();
+			event.preventDefault();
+			
+			// 获取当前camera
+			const camera = game.scene.scenes[0].cameras.main;
+			const zoomFactor = 0.1;
+			const minZoom = 0.2;
+			const maxZoom = 2.0;
+			
+			// 根据滚轮方向调整zoom
+			if (event.deltaY < 0) {
+				// 向上滚动，放大
+				camera.zoom = Math.min(camera.zoom + zoomFactor, maxZoom);
+			} else {
+				// 向下滚动，缩小
+				camera.zoom = Math.max(camera.zoom - zoomFactor, minZoom);
+			}
 		}, { passive: false, capture: true });
 
 		function add_text(game, x, y, text, background) {
-			res = game.add.text(
+			const res = game.add.text(
 				x,
 				y,
 				text,
@@ -175,8 +219,8 @@
 			return res;
 		}
 
-		posX = 20;
-		posY = 20;
+		let posX = 20;
+		let posY = 20;
 
 
 
@@ -185,9 +229,6 @@
 		// Show current time
 		currentTime = add_text(this, 20, 20, "", "#ccffcc");
 
-		// Show conversation content
-		textConversation = add_text(this, 20, posY + currentTime.height + 10, " —— ", "#ccffcc");
-
 		// Setup camera
 		player = this.physics.add.sprite(2440, 500, "atlas", "down").setSize(30, 40).setOffset(0, 0);
 		player.setDepth(-1);
@@ -195,6 +236,23 @@
 		camera.startFollow(player);
 		camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
 		cursors = this.input.keyboard.createCursorKeys();
+
+		// 记录场景与地图引用供自动巡航与建造使用
+		sceneRef = this;
+		mapRef = map;
+		layersRef = {
+			bottomGroundLayer,
+			exteriorGroundLayer,
+			exteriorDecorationL1Layer,
+			exteriorDecorationL2Layer,
+			interiorGroundLayer,
+			wallLayer,
+			interiorFurnitureL1Layer,
+			interiorFurnitureL2Layer,
+			foregroundL1Layer,
+			foregroundL2Layer,
+			collisionsLayer,
+		};
 
 		// Setup personas
 		// We start by creating the game sprite objects.
@@ -222,6 +280,22 @@
 				}
 			).setDepth(3);
 			pronunciatios[persona_name].alpha = 0.7;
+			
+			// Create name label below the character
+			nameLabels[persona_name] = this.add.text(
+				new_sprite.body.x - 15,
+				new_sprite.body.y + 32 + 5,
+				persona_name.replace("_", " "),
+				{
+					font: "14px Arial",
+					fill: "#ffffff",
+					backgroundColor: "#000000",
+					padding: { x: 6, y: 2},
+					borderRadius: "8px"
+				}
+			).setDepth(3);
+			nameLabels[persona_name].alpha = 0.8;
+			nameLabels[persona_name].setOrigin(0.5, 0); // Center horizontally
 		}
 
 		// Create animations
@@ -233,7 +307,7 @@
 			let down_walk_name = persona_name + "-down-walk";
 			let up_walk_name = persona_name + "-up-walk";
 
-			frameRate = 4;
+			let frameRate = 4;
 			if (movement_speed > 1) frameRate = 8;
 
 			anims.create({
@@ -288,20 +362,46 @@
 			player.body.setVelocityY(camera_speed);
 		}
 
+		// 自动巡航：在无按键操作时控制摄像机跟随的玩家移动
+		const anyKey = cursors.left.isDown || cursors.right.isDown || cursors.up.isDown || cursors.down.isDown;
+		if (!anyKey) {
+			updateAutoCameraTour(delta, camera_speed);
+		}
+		
+		// Zoom control with keyboard
+		const camera = this.cameras.main;
+		const zoomSpeed = 0.02;
+		const minZoom = 0.2;
+		const maxZoom = 2.0;
+		
+		// + 键放大，- 键缩小
+		if (this.input.keyboard.addKey('PLUS').isDown || this.input.keyboard.addKey('EQUALS').isDown) {
+			camera.zoom = Math.min(camera.zoom + zoomSpeed, maxZoom);
+		}
+		if (this.input.keyboard.addKey('MINUS').isDown || this.input.keyboard.addKey('UNDERSCORE').isDown) {
+			camera.zoom = Math.max(camera.zoom - zoomSpeed, minZoom);
+		}
+		
+		// 0 键重置zoom
+		if (this.input.keyboard.addKey('ZERO').isDown) {
+			camera.zoom = zoom; // 重置为初始zoom值
+		}
 
 
 
 
-		curr_datetime = new Date(start_datetime.getTime());
-		curr_year = curr_datetime.getFullYear().toString().padStart(4, "0");
-		curr_month = (curr_datetime.getMonth() + 1).toString().padStart(2, "0");
-		curr_day = curr_datetime.getDate().toString().padStart(2, "0");
-		curr_hour = curr_datetime.getHours().toString().padStart(2, "0");
-		curr_minute = curr_datetime.getMinutes().toString().padStart(2, "0");
-		conversation_key = `${curr_year}${curr_month}${curr_day}-${curr_hour}:${curr_minute}`;
-		conversation_key_text = all_movement["conversation"][conversation_key];
+
+		const curr_datetime = new Date(start_datetime.getTime());
+		const curr_year = curr_datetime.getFullYear().toString().padStart(4, "0");
+		const curr_month = (curr_datetime.getMonth() + 1).toString().padStart(2, "0");
+		const curr_day = curr_datetime.getDate().toString().padStart(2, "0");
+		const curr_hour = curr_datetime.getHours().toString().padStart(2, "0");
+		const curr_minute = curr_datetime.getMinutes().toString().padStart(2, "0");
+		const conversation_key = `${curr_year}${curr_month}${curr_day}-${curr_hour}:${curr_minute}`;
+		const conversation_key_text = all_movement["conversation"][conversation_key];
 		if (conversation_key_text && conversation_key_text != "") {
-			textConversation.setText(`\n${conversation_key} 对话记录：\n` + conversation_key_text);
+			// 将对话内容发送到右侧栏而不是显示在游戏画面上
+			addConversationToSidebar(conversation_key, conversation_key_text);
 		}
 
 		// Moving personas
@@ -319,9 +419,12 @@
 
 						let action = all_movement[step][curr_persona_name.replace("_", " ")]["action"];
 
-						let act = action;
-						act = act.length > 25 ? act.substring(0, 20)+"..." : act;
-						pronunciatios[curr_persona_name].setText(curr_persona_name + ": " + act);
+					let act = action;
+					// 显示完整的对话内容，但限制长度以适应游戏画面
+					if (act.length > 25) {
+						act = act.substring(0, 25) + "...";
+					}
+					pronunciatios[curr_persona_name].setText(curr_persona_name.replace("_", " ") + ": " + act);
 
 
 					}
@@ -353,6 +456,12 @@
 
 						curr_pronunciatio.x = curr_persona.body.x - 15;
 						curr_pronunciatio.y = curr_persona.body.y - 15 - 25;
+						
+						// 更新名字标签位置
+						if (nameLabels[curr_persona_name]) {
+							nameLabels[curr_persona_name].x = curr_persona.body.x;
+							nameLabels[curr_persona_name].y = curr_persona.body.y + 32 + 5;
+						}
 
 						let left_walk_name = curr_persona_name + "-left-walk";
 						let right_walk_name = curr_persona_name + "-right-walk";
@@ -386,6 +495,12 @@
 				if (movement_target[curr_persona_name]) {
 					curr_persona.body.x = movement_target[curr_persona_name][0];
 					curr_persona.body.y = movement_target[curr_persona_name][1];
+					
+					// 更新名字标签位置
+					if (nameLabels[curr_persona_name]) {
+						nameLabels[curr_persona_name].x = curr_persona.body.x;
+						nameLabels[curr_persona_name].y = curr_persona.body.y + 32 + 5;
+					}
 				}
 			}
 			execute_count = execute_count_max + 1;
@@ -396,6 +511,179 @@
 		}
 
 		execute_count -= 1;
+	}
+
+	// 选取随机地图坐标
+	function pickRandomMapCoord() {
+		if (!mapRef) return { x: autoBasePos.x, y: autoBasePos.y };
+		const w = mapRef.widthInPixels;
+		const h = mapRef.heightInPixels;
+		const margin = 64; // 避免靠近边界
+		const x = Math.floor(Math.random() * (w - margin * 2)) + margin;
+		const y = Math.floor(Math.random() * (h - margin * 2)) + margin;
+		return { x, y };
+	}
+
+	// 在指定位置生成简易建筑覆盖层（矩形+标签），体现“建造”效果
+	function spawnBuildingOverlay(x, y) {
+		if (!sceneRef) return;
+		const rect = sceneRef.add.rectangle(x, y, 64, 64, 0x4CAF50, 0.35);
+		rect.setStrokeStyle(2, 0x66BB6A, 0.9);
+		rect.setDepth(1);
+		const label = add_text(sceneRef, x - 26, y - 42, '🏠 建造', '#223322');
+		label.setDepth(2);
+	}
+
+	// 使用 AI_Buildings 图集放置真实建筑瓦片，并返回格子坐标
+	const buildingTileWidth = 32;
+	const buildingTypes = ['house', 'farm', 'shop', 'factory', 'mine', 'park'];
+	const buildingTileIndex = {
+		// x, y 为在 AI_Buildings.png 中的格子坐标（32x32）
+		house: { tx: 0, ty: 0 },
+		farm: { tx: 1, ty: 0 },
+		shop: { tx: 2, ty: 0 },
+		factory: { tx: 3, ty: 0 },
+		mine: { tx: 4, ty: 0 },
+		park: { tx: 5, ty: 0 }
+	};
+
+	function chooseRandomBuildingType() {
+		return buildingTypes[Math.floor(Math.random() * buildingTypes.length)];
+	}
+
+	function placeBuildingTile(type, worldX, worldY) {
+		if (!sceneRef) return { tileX: 0, tileY: 0 };
+		const info = buildingTileIndex[type] || buildingTileIndex.house;
+		const cropX = info.tx * buildingTileWidth;
+		const cropY = info.ty * buildingTileWidth;
+		// 对齐到最近的格子中心
+		const tileX = Math.floor(worldX / tile_width);
+		const tileY = Math.floor(worldY / tile_width);
+		const alignedX = tileX * tile_width + tile_width / 2;
+		const alignedY = tileY * tile_width + tile_width / 2;
+		const img = sceneRef.add.image(alignedX, alignedY, 'AI_Buildings');
+		img.setCrop(cropX, cropY, buildingTileWidth, buildingTileWidth);
+		img.setDepth(10);
+		return { tileX, tileY };
+	}
+
+	function postTerrainEvent(type, tileX, tileY, agentName = '系统') {
+		const typeNameMap = {
+			house: '住宅',
+			farm: '农场',
+			shop: '商铺',
+			factory: '工厂',
+			mine: '矿场',
+			park: '公园'
+		};
+		const payload = {
+			type: 'building_construction',
+			timestamp: new Date().toISOString(),
+			description: `在 (${tileX}, ${tileY}) 建造了 ${typeNameMap[type] || '建筑'}`,
+			agent: agentName,
+			location: { x: tileX, y: tileY },
+			building: type
+		};
+		fetch('/api/terrain/events', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		}).then(() => {
+			if (typeof loadTerrainEvents === 'function') {
+				loadTerrainEvents();
+			}
+		}).catch(err => console.error('Post terrain event failed:', err));
+	}
+
+	function showAutoNavStatus(text) {
+		const el = document.getElementById('autoNavStatus');
+		if (el) el.textContent = `状态：${text}`;
+	}
+
+	function readAutoNavConfigFromUI() {
+		const toggle = document.getElementById('autoCameraToggle');
+		const moveSec = document.getElementById('autoMoveSeconds');
+		const returnSec = document.getElementById('autoReturnSeconds');
+		const buildToggle = document.getElementById('autoBuildToggle');
+		autoCameraEnabled = toggle ? toggle.checked : autoCameraEnabled;
+		autoMoveSeconds = moveSec ? Math.max(2, Number(moveSec.value || autoMoveSeconds)) : autoMoveSeconds;
+		autoReturnSeconds = returnSec ? Math.max(2, Number(returnSec.value || autoReturnSeconds)) : autoReturnSeconds;
+		autoBuildEnabled = buildToggle ? buildToggle.checked : autoBuildEnabled;
+	}
+
+	function setupAutoNavControls() {
+		const toggle = document.getElementById('autoCameraToggle');
+		const moveSec = document.getElementById('autoMoveSeconds');
+		const returnSec = document.getElementById('autoReturnSeconds');
+		const buildToggle = document.getElementById('autoBuildToggle');
+		const startBtn = document.getElementById('autoCameraStartButton');
+
+		if (toggle) toggle.addEventListener('change', () => { readAutoNavConfigFromUI(); showAutoNavStatus(autoCameraEnabled ? '自动巡航中' : '已关闭'); });
+		if (moveSec) moveSec.addEventListener('change', () => { readAutoNavConfigFromUI(); });
+		if (returnSec) returnSec.addEventListener('change', () => { readAutoNavConfigFromUI(); });
+		if (buildToggle) buildToggle.addEventListener('change', () => { readAutoNavConfigFromUI(); });
+		if (startBtn) startBtn.addEventListener('click', () => {
+			readAutoNavConfigFromUI();
+			autoState = 'idle_base';
+			autoNextActionAt = performance.now() + autoMoveSeconds * 1000;
+			showAutoNavStatus('待命');
+		});
+
+		readAutoNavConfigFromUI();
+		showAutoNavStatus(autoCameraEnabled ? '自动巡航中' : '已关闭');
+	}
+
+	function updateAutoCameraTour(delta, camera_speed) {
+		if (!autoCameraEnabled || !player) return;
+		const now = performance.now();
+		const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		const moveTowards = (src, dst) => {
+			const dx = dst.x - src.x;
+			const dy = dst.y - src.y;
+			const d = Math.hypot(dx, dy) || 1;
+			player.body.setVelocity((dx / d) * camera_speed, (dy / d) * camera_speed);
+		};
+
+		if (autoState === 'idle_base') {
+			if (now >= autoNextActionAt) {
+				autoTargetPos = pickRandomMapCoord();
+				autoState = 'moving_out';
+				showAutoNavStatus('前往新区域');
+			}
+			return;
+		}
+		if (autoState === 'moving_out') {
+			moveTowards(player.body, autoTargetPos);
+			if (dist(player.body, autoTargetPos) < 12) {
+				player.body.setVelocity(0, 0);
+				autoState = 'at_target';
+				if (autoBuildEnabled) {
+					const btype = chooseRandomBuildingType();
+					const placed = placeBuildingTile(btype, autoTargetPos.x, autoTargetPos.y);
+					postTerrainEvent(btype, placed.tileX, placed.tileY);
+				}
+				autoNextActionAt = now + autoReturnSeconds * 1000;
+				showAutoNavStatus('抵达，建设中');
+			}
+			return;
+		}
+		if (autoState === 'at_target') {
+			if (now >= autoNextActionAt) {
+				autoState = 'moving_back';
+				showAutoNavStatus('返回基地');
+			}
+			return;
+		}
+		if (autoState === 'moving_back') {
+			moveTowards(player.body, autoBasePos);
+			if (dist(player.body, autoBasePos) < 12) {
+				player.body.setVelocity(0, 0);
+				autoState = 'idle_base';
+				autoNextActionAt = now + autoMoveSeconds * 1000;
+				showAutoNavStatus('待命');
+			}
+			return;
+		}
 	}
 
 	// ========== 实时模拟控制功能 ==========
@@ -425,9 +713,25 @@
 			updateSimulationFromServer(data);
 		});
 		
+		socket.on('current_state', function(data) {
+			console.log('Received current state:', data);
+			updateSimulationFromServer(data);
+		});
+		
 		socket.on('simulation_status', function(data) {
 			console.log('Simulation status:', data);
 			updateSimulationStatus(data);
+		});
+
+		// 经济事件：回放服务通过 SocketIO 广播 'economy_event'
+		socket.on('economy_event', function(evt) {
+			try {
+				appendEconomyEvent(evt);
+				// 事件通常伴随价格或库存变化，刷新价格板
+				loadEconomyState();
+			} catch (e) {
+				console.error('处理经济事件失败:', e);
+			}
 		});
 	}
 	
@@ -436,17 +740,19 @@
 		const statusDiv = document.getElementById('connectionStatus');
 		const textSpan = document.getElementById('connectionText');
 		
-		if (connected) {
-			statusDiv.className = 'alert alert-success';
-			statusDiv.style.display = 'block';
-			textSpan.textContent = message;
-			setTimeout(() => {
-				statusDiv.style.display = 'none';
-			}, 3000);
-		} else {
-			statusDiv.className = 'alert alert-danger';
-			statusDiv.style.display = 'block';
-			textSpan.textContent = message;
+		if (statusDiv && textSpan) {
+			if (connected) {
+				statusDiv.className = 'alert alert-success';
+				statusDiv.style.display = 'block';
+				textSpan.textContent = message;
+				setTimeout(() => {
+					statusDiv.style.display = 'none';
+				}, 3000);
+			} else {
+				statusDiv.className = 'alert alert-danger';
+				statusDiv.style.display = 'block';
+				textSpan.textContent = message;
+			}
 		}
 	}
 	
@@ -459,20 +765,67 @@
 	
 	// 从服务器更新模拟数据
 	function updateSimulationFromServer(data) {
+		console.log('Updating simulation from server:', data);
+		
+		// 处理agents数据
 		if (data.agents) {
-			// 更新角色位置和状态
 			for (const agentName in data.agents) {
 				const agentData = data.agents[agentName];
-				if (personas[agentName] && agentData.position) {
+				
+				// 检查agent是否存在于游戏中
+				if (personas[agentName] && agentData.movement) {
 					// 更新角色位置
 					const persona = personas[agentName];
-					persona.body.x = agentData.position[0] * tile_width;
-					persona.body.y = agentData.position[1] * tile_width;
+					const newX = agentData.movement[0] * tile_width;
+					const newY = agentData.movement[1] * tile_width;
 					
-					// 更新对话内容
-					if (agentData.conversation && pronunciatios[agentName]) {
-						pronunciatios[agentName].setText(agentData.conversation);
+					persona.body.x = newX;
+					persona.body.y = newY;
+					
+					// 更新游戏画面上的状态显示（显示完整内容）
+					if (pronunciatios[agentName]) {
+						let displayText = '';
+						
+						// 优先显示对话内容，如果没有对话则显示行动
+						if (agentData.recent_chat && agentData.recent_chat.trim() !== '') {
+							displayText = agentData.recent_chat;
+						} else if (agentData.action) {
+							displayText = agentData.action;
+						} else if (agentData.currently) {
+							displayText = agentData.currently;
+						} else {
+							displayText = '活动中';
+						}
+						
+						// 限制长度以适应游戏画面
+						if (displayText.length > 25) {
+							displayText = displayText.substring(0, 25) + '...';
+						}
+						
+						pronunciatios[agentName].setText(agentName + ': ' + displayText);
+						
+						// 更新对话框位置
+						pronunciatios[agentName].x = newX - 15;
+						pronunciatios[agentName].y = newY - 15 - 25;
 					}
+					
+					// 更新名字标签位置
+					if (nameLabels[agentName]) {
+						nameLabels[agentName].x = newX;
+						nameLabels[agentName].y = newY + 32 + 5;
+					}
+					
+					// 更新右侧边栏的agent状态
+					updateAgentStatus(agentName, agentData.currently || agentData.action || '活动中');
+					
+					// 如果有最近的对话内容，添加到右侧对话历史（完整内容）
+					if (agentData.recent_chat && agentData.recent_chat.trim() !== '') {
+						addChatMessage(agentName, agentData.recent_chat);
+					}
+					
+					console.log(`Updated ${agentName} position to (${newX}, ${newY})`);
+				} else {
+					console.log(`Agent ${agentName} not found in personas or missing movement data`);
 				}
 			}
 		}
@@ -480,146 +833,1140 @@
 		// 更新时间
 		if (data.current_time) {
 			const gameTime = new Date(data.current_time);
-			currentTime.setText(gameTime.toLocaleTimeString("zh-CN", datetime_options));
+			if (typeof currentTime !== 'undefined' && currentTime) {
+				currentTime.setText(gameTime.toLocaleTimeString("zh-CN", datetime_options));
+			}
 		}
 		
 		// 更新步数
 		if (data.step !== undefined) {
 			simulationStep = data.step;
-			document.getElementById('stepCount').textContent = simulationStep;
+			const stepCountElement = document.getElementById('stepCount');
+			if (stepCountElement) {
+				stepCountElement.textContent = simulationStep;
+			}
+		}
+		
+		// 更新运行状态
+		if (data.running !== undefined) {
+			isSimulationRunning = data.running;
 		}
 	}
 	
-	// 更新模拟状态
-	function updateSimulationStatus(data) {
-		const statusText = document.getElementById('statusText');
-		const startBtn = document.getElementById('startSimBtn');
-		const pauseBtn = document.getElementById('pauseSimBtn');
-		const stopBtn = document.getElementById('stopSimBtn');
-		const strideInput = document.getElementById('strideInput');
+
+	
+	// 更新agent状态显示
+	function updateAgentStatus(agentName, status) {
+		const statusElement = document.getElementById(`status-${agentName}`);
+		if (statusElement) {
+			statusElement.textContent = status.length > 30 ? status.substring(0, 30) + '...' : status;
+		}
+	}
+	
+	// 添加对话消息到历史记录
+	let lastMessages = {}; // 记录每个agent的最后一条消息，避免重复
+	
+	function addChatMessage(agentName, message) {
+		// 检查是否是重复消息
+		if (lastMessages[agentName] === message) {
+			return;
+		}
+		lastMessages[agentName] = message;
 		
-		isSimulationRunning = data.running;
+		const chatMessages = document.getElementById('chatMessages');
+		if (!chatMessages) return;
 		
-		if (data.running) {
-			if (data.paused) {
-				statusText.textContent = '已暂停';
-				startBtn.disabled = true;
-				pauseBtn.disabled = false;
-				pauseBtn.innerHTML = '<span class="glyphicon glyphicon-play"></span> 继续';
-				stopBtn.disabled = false;
-				strideInput.disabled = true;
-			} else {
-				statusText.textContent = '运行中';
-				startBtn.disabled = true;
-				pauseBtn.disabled = false;
-				pauseBtn.innerHTML = '<span class="glyphicon glyphicon-pause"></span> 暂停';
-				stopBtn.disabled = false;
-				strideInput.disabled = true;
+		// 创建消息元素
+		const messageDiv = document.createElement('div');
+		messageDiv.className = 'chat-message';
+		
+		const agentNameDiv = document.createElement('div');
+		agentNameDiv.className = 'agent-name';
+		agentNameDiv.textContent = agentName;
+		
+		const messageContentDiv = document.createElement('div');
+		messageContentDiv.className = 'message-content';
+		messageContentDiv.textContent = message;
+		
+		const timestampDiv = document.createElement('div');
+		timestampDiv.className = 'timestamp';
+		const now = new Date();
+		timestampDiv.textContent = now.toLocaleTimeString('zh-CN');
+		
+		messageDiv.appendChild(agentNameDiv);
+		messageDiv.appendChild(messageContentDiv);
+		messageDiv.appendChild(timestampDiv);
+		
+		// 添加到聊天容器
+		chatMessages.appendChild(messageDiv);
+		
+		// 限制消息数量，保持最新的50条
+		const messages = chatMessages.querySelectorAll('.chat-message');
+		if (messages.length > 50) {
+			chatMessages.removeChild(messages[0]);
+		}
+		
+		// 自动滚动到底部
+	chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// 添加对话记录到右侧栏
+function addConversationToSidebar(timeKey, conversationText) {
+	const chatMessages = document.getElementById('chatMessages');
+	if (!chatMessages) return;
+	
+	// 解析对话文本，按行分割
+	const lines = conversationText.split('\n').filter(line => line.trim() !== '');
+	let currentLocation = '';
+	
+	for (const line of lines) {
+		const trimmedLine = line.trim();
+		if (!trimmedLine) continue;
+		
+		// 检查是否是地点信息
+		if (trimmedLine.startsWith('地点：')) {
+			currentLocation = trimmedLine.substring(3); // 移除"地点："前缀
+			
+			// 创建地点信息气泡
+			const locationDiv = document.createElement('div');
+			locationDiv.className = 'chat-message location-message';
+			
+			const locationNameDiv = document.createElement('div');
+			locationNameDiv.className = 'agent-name';
+			locationNameDiv.textContent = '📍 地点';
+			
+			const locationContentDiv = document.createElement('div');
+			locationContentDiv.className = 'message-content';
+			locationContentDiv.textContent = currentLocation;
+			
+			const locationTimestampDiv = document.createElement('div');
+			locationTimestampDiv.className = 'timestamp';
+			locationTimestampDiv.textContent = timeKey;
+			
+			locationDiv.appendChild(locationNameDiv);
+			locationDiv.appendChild(locationContentDiv);
+			locationDiv.appendChild(locationTimestampDiv);
+			
+			chatMessages.appendChild(locationDiv);
+		}
+		// 检查是否是角色对话（格式：角色名：对话内容）
+		else if (trimmedLine.includes('：') && !trimmedLine.startsWith('地点：')) {
+			const colonIndex = trimmedLine.indexOf('：');
+			const agentName = trimmedLine.substring(0, colonIndex).trim();
+			const message = trimmedLine.substring(colonIndex + 1).trim();
+			
+			if (agentName && message) {
+				// 创建角色对话气泡
+				const messageDiv = document.createElement('div');
+				messageDiv.className = 'chat-message agent-message';
+				
+				const agentNameDiv = document.createElement('div');
+				agentNameDiv.className = 'agent-name';
+				agentNameDiv.textContent = agentName;
+				
+				const messageContentDiv = document.createElement('div');
+				messageContentDiv.className = 'message-content';
+				messageContentDiv.textContent = message;
+				
+				const timestampDiv = document.createElement('div');
+				timestampDiv.className = 'timestamp';
+				timestampDiv.textContent = timeKey;
+				
+				messageDiv.appendChild(agentNameDiv);
+				messageDiv.appendChild(messageContentDiv);
+				messageDiv.appendChild(timestampDiv);
+				
+				chatMessages.appendChild(messageDiv);
 			}
+		}
+	}
+	
+	// 限制消息数量，保持最新的50条
+	const messages = chatMessages.querySelectorAll('.chat-message');
+	if (messages.length > 50) {
+		for (let i = 0; i < messages.length - 50; i++) {
+			chatMessages.removeChild(messages[i]);
+		}
+	}
+	
+	// 自动滚动到底部
+	chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+// 回放控制函数
+	function startReplay() {
+		if (socket) {
+			socket.emit('start_replay');
+			updateReplayButtons('playing');
+			console.log('Starting replay...');
+		}
+	}
+	
+	function pauseReplay() {
+		if (socket) {
+			socket.emit('pause_replay');
+			updateReplayButtons('paused');
+			console.log('Pausing replay...');
+		}
+	}
+	
+	function stopReplay() {
+		if (socket) {
+			socket.emit('stop_replay');
+			updateReplayButtons('stopped');
+			console.log('Stopping replay...');
+		}
+	}
+	
+	// 更新回放按钮状态
+	function updateReplayButtons(state) {
+		const startBtn = document.getElementById('startReplayBtn');
+		const pauseBtn = document.getElementById('pauseReplayBtn');
+		const stopBtn = document.getElementById('stopReplayBtn');
+		
+		if (startBtn && pauseBtn && stopBtn) {
+			switch(state) {
+				case 'playing':
+					startBtn.disabled = true;
+					pauseBtn.disabled = false;
+					stopBtn.disabled = false;
+					pauseBtn.innerHTML = '<span class="glyphicon glyphicon-pause"></span> 暂停';
+					break;
+				case 'paused':
+					startBtn.disabled = true;
+					pauseBtn.disabled = false;
+					stopBtn.disabled = false;
+					pauseBtn.innerHTML = '<span class="glyphicon glyphicon-play"></span> 继续';
+					break;
+				case 'stopped':
+					startBtn.disabled = false;
+					pauseBtn.disabled = true;
+					stopBtn.disabled = true;
+					pauseBtn.innerHTML = '<span class="glyphicon glyphicon-pause"></span> 暂停';
+					break;
+			}
+		}
+	}
+
+	// 地形和社会关系功能
+	function switchTab(tabName) {
+		const terrainBtn = document.getElementById('terrainTabBtn');
+		const socialBtn = document.getElementById('socialTabBtn');
+		const terrainPanel = document.getElementById('terrainPanel');
+		const socialPanel = document.getElementById('socialPanel');
+		
+		if (tabName === 'terrain') {
+			terrainBtn.classList.add('active');
+			socialBtn.classList.remove('active');
+			terrainBtn.style.background = 'rgba(76, 175, 80, 0.3)';
+			socialBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+			terrainPanel.style.display = 'block';
+			socialPanel.style.display = 'none';
+			loadTerrainEvents();
 		} else {
-			statusText.textContent = '未启动';
-			startBtn.disabled = false;
-			pauseBtn.disabled = true;
-			pauseBtn.innerHTML = '<span class="glyphicon glyphicon-pause"></span> 暂停';
-			stopBtn.disabled = true;
-			strideInput.disabled = false;
-		}
-		
-		if (data.step !== undefined) {
-			simulationStep = data.step;
-			document.getElementById('stepCount').textContent = simulationStep;
+			socialBtn.classList.add('active');
+			terrainBtn.classList.remove('active');
+			socialBtn.style.background = 'rgba(33, 150, 243, 0.3)';
+			terrainBtn.style.background = 'rgba(255, 255, 255, 0.1)';
+			socialPanel.style.display = 'block';
+			terrainPanel.style.display = 'none';
+			loadSocialRelationships();
 		}
 	}
 	
-	// 开始模拟
-	function startSimulation() {
-		const stride = parseInt(document.getElementById('strideInput').value) || 10;
+function loadTerrainEvents() {
+    const container = document.getElementById('terrain-events');
+    if (!container) return;
+    fetch('/api/terrain/events')
+        .then(response => response.json())
+        .then(data => {
+            container.innerHTML = '';
+            
+            if (data.events && data.events.length > 0) {
+                data.events.forEach(event => {
+                    const eventDiv = document.createElement('div');
+                    eventDiv.style.cssText = 'background: rgba(76, 175, 80, 0.2); border-left: 3px solid #4CAF50; padding: 10px; margin-bottom: 8px; border-radius: 5px;';
+                    
+                    // 根据事件类型设置不同的图标和描述
+                    let typeIcon = '🏗️';
+                    let typeText = '建设活动';
+                    if (event.type === 'terrain_development') {
+                        typeIcon = '🌱';
+                        typeText = '环境美化';
+                    } else if (event.type === 'social_gathering') {
+                        typeIcon = '👥';
+                        typeText = '社交活动';
+                    } else if (event.type === 'building_construction') {
+                        typeText = '建筑施工';
+                    }
+                    
+                    eventDiv.innerHTML = `
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;">
+                            <div style="display: flex; align-items: center;">
+                                <span style="margin-right: 8px; font-size: 16px;">${typeIcon}</span>
+                                <span style="color: #4CAF50; font-weight: 600; font-size: 13px;">${typeText}</span>
+                            </div>
+                            <span style="color: rgba(255, 255, 255, 0.7); font-size: 11px;">
+                                ${new Date(event.timestamp).toLocaleTimeString()}
+                            </span>
+                        </div>
+                        <div style="color: rgba(255, 255, 255, 0.9); font-size: 13px; line-height: 1.4; margin-bottom: 5px;">
+                            ${event.description}
+                        </div>
+                        <div style="color: rgba(255, 255, 255, 0.6); font-size: 12px;">
+                            👤 ${event.agent || event.agents?.join(', ') || '未知参与者'}
+                        </div>
+                        ${event.social_impact ? `<div style="color: #FFC107; font-size: 12px; margin-top: 5px;">💫 ${event.social_impact}</div>` : ''}
+                    `;
+                    
+                    container.appendChild(eventDiv);
+                });
+            } else {
+                container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 20px;">暂无地形事件记录</div>';
+            }
+        })
+        .catch(error => {
+            console.error('Error loading terrain events:', error);
+            if (container) {
+                container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 20px;">加载地形事件失败</div>';
+            }
+        });
+}
+	
+function loadSocialRelationships() {
+    const container = document.getElementById('social-relationships');
+    if (!container) return;
+    fetch('/api/social')
+        .then(response => response.json())
+        .then(data => {
+            container.innerHTML = '';
+            
+            if (data.relationships && data.relationships.length > 0) {
+                data.relationships.forEach(rel => {
+						const relDiv = document.createElement('div');
+						relDiv.style.cssText = 'background: rgba(33, 150, 243, 0.2); border-left: 3px solid #2196F3; padding: 10px; margin-bottom: 8px; border-radius: 5px;';
+						
+						// 根据关系类型设置图标和颜色
+						let typeIcon = '👥';
+						let typeColor = '#2196F3';
+						if (rel.type === 'friend' || rel.type === 'FRIEND') {
+							typeIcon = '👫';
+							typeColor = '#4CAF50';
+						} else if (rel.type === 'romantic_interest' || rel.type === 'ROMANTIC') {
+							typeIcon = '💕';
+							typeColor = '#E91E63';
+						} else if (rel.type === 'colleague' || rel.type === 'COLLEAGUE') {
+							typeIcon = '🤝';
+							typeColor = '#FF9800';
+						} else if (rel.type === 'rival' || rel.type === 'RIVAL') {
+							typeIcon = '⚔️';
+							typeColor = '#F44336';
+						} else if (rel.type === 'acquaintance' || rel.type === 'ACQUAINTANCE') {
+							typeIcon = '🤝';
+							typeColor = '#9E9E9E';
+						}
+						
+						const intimacyValue = rel.intimacy || rel.strength || 0;
+						const intimacyColor = intimacyValue > 70 ? '#4CAF50' : 
+											 intimacyValue > 40 ? '#FFC107' : '#FF5722';
+						
+						relDiv.innerHTML = `
+							<div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+								<div style="display: flex; align-items: center;">
+									<span style="margin-right: 8px; font-size: 16px;">${typeIcon}</span>
+									<span style="color: ${typeColor}; font-weight: 600; font-size: 13px;">
+										${rel.agent1} ↔ ${rel.agent2}
+									</span>
+								</div>
+								<span style="color: ${intimacyColor}; font-size: 12px; font-weight: 600;">
+									${Math.round(intimacyValue)}%
+								</span>
+							</div>
+							<div style="color: rgba(255, 255, 255, 0.8); font-size: 12px; margin-bottom: 5px;">
+								关系类型: ${getRelationshipTypeName(rel.type)} | 状态: ${getStatusName(rel.status)}
+							</div>
+							${rel.interaction_count ? `
+								<div style="color: rgba(255, 255, 255, 0.6); font-size: 11px; margin-bottom: 3px;">
+									💬 互动次数: ${rel.interaction_count}
+									${rel.positive_interactions ? ` | 👍 ${rel.positive_interactions}` : ''}
+									${rel.negative_interactions ? ` | 👎 ${rel.negative_interactions}` : ''}
+								</div>
+							` : ''}
+							${rel.last_interaction ? `
+								<div style="color: rgba(255, 255, 255, 0.5); font-size: 10px;">
+									🕒 最后互动: ${new Date(rel.last_interaction).toLocaleTimeString()}
+								</div>
+							` : ''}
+						`;
+						
+						container.appendChild(relDiv);
+					});
+				} else {
+					container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 20px;">暂无社会关系数据</div>';
+				}
+        })
+        .catch(error => {
+            console.error('Error loading social relationships:', error);
+            if (container) {
+                container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 20px;">加载社会关系失败</div>';
+            }
+        });
+}
+	
+	function getRelationshipTypeName(type) {
+		const typeNames = {
+			'stranger': '陌生人',
+			'acquaintance': '熟人',
+			'friend': '朋友',
+			'close_friend': '密友',
+			'colleague': '同事',
+			'neighbor': '邻居',
+			'romantic_interest': '暗恋对象',
+			'dating': '约会中',
+			'boyfriend_girlfriend': '恋人',
+			'engaged': '订婚',
+			'married': '已婚',
+			'ex_partner': '前任',
+			'enemy': '敌人',
+			'family': '家人'
+		};
+		return typeNames[type] || type;
+	}
+	
+	function getStatusName(status) {
+		const statusNames = {
+			'developing': '发展中',
+			'stable': '稳定',
+			'declining': '衰退中',
+			'conflicted': '冲突中',
+			'ended': '已结束'
+		};
+		return statusNames[status] || status;
+	}
+
+	// 天气和时间显示函数（自动更新）
+	
+	// 天气视觉效果控制函数 - 支持平滑过渡
+	let currentWeatherType = null;
+	
+	function updateWeatherVisualEffects(weatherType) {
+		// 如果天气类型没有变化，不需要更新
+		if (currentWeatherType === weatherType) {
+			return;
+		}
 		
-		fetch('/api/simulation/start', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-			},
-			body: JSON.stringify({ stride: stride })
-		})
-		.then(response => response.json())
-		.then(data => {
-			if (data.success) {
-				console.log('Simulation started successfully');
-			} else {
-				alert('启动模拟失败: ' + data.message);
+		const rainEffect = document.getElementById('rainEffect');
+		const snowEffect = document.getElementById('snowEffect');
+		const fogEffect = document.getElementById('fogEffect');
+		const cloudyEffect = document.getElementById('cloudyEffect');
+		const stormEffect = document.getElementById('stormEffect');
+		
+		// 先淡出当前效果
+		fadeOutCurrentWeatherEffects();
+		
+		// 延迟后淡入新效果
+		setTimeout(() => {
+			fadeInNewWeatherEffect(weatherType);
+			currentWeatherType = weatherType;
+		}, 1000); // 1秒延迟，让淡出效果完成
+	}
+	
+	// 淡出当前天气效果
+	function fadeOutCurrentWeatherEffects() {
+		const effects = ['rainEffect', 'snowEffect', 'fogEffect', 'cloudyEffect', 'stormEffect'];
+		
+		effects.forEach(effectId => {
+			const element = document.getElementById(effectId);
+			if (element && element.classList.contains('active')) {
+				element.classList.add('fade-out');
+				element.classList.remove('active', 'fade-in');
+				
+				// 在动画完成后移除fade-out类
+				setTimeout(() => {
+					element.classList.remove('fade-out');
+				}, 3000);
 			}
-		})
-		.catch(error => {
-			console.error('Error starting simulation:', error);
-			alert('启动模拟时发生错误');
 		});
 	}
 	
-	// 暂停/继续模拟
-	function pauseSimulation() {
-		fetch('/api/simulation/pause', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-			}
-		})
+	// 淡入新天气效果
+	function fadeInNewWeatherEffect(weatherType) {
+		const rainEffect = document.getElementById('rainEffect');
+		const snowEffect = document.getElementById('snowEffect');
+		const fogEffect = document.getElementById('fogEffect');
+		const cloudyEffect = document.getElementById('cloudyEffect');
+		const stormEffect = document.getElementById('stormEffect');
+		
+		// 根据天气类型激活相应效果
+		switch(weatherType) {
+			case 'rainy':
+				rainEffect.classList.add('fade-in', 'active');
+				rainEffect.classList.remove('fade-out');
+				break;
+			case 'stormy':
+				stormEffect.classList.add('fade-in', 'active');
+				stormEffect.classList.remove('fade-out');
+				break;
+			case 'snowy':
+				snowEffect.classList.add('fade-in', 'active');
+				snowEffect.classList.remove('fade-out');
+				break;
+			case 'foggy':
+				fogEffect.classList.add('active');
+				fogEffect.classList.remove('fade-out');
+				break;
+			case 'cloudy':
+				cloudyEffect.classList.add('active');
+				cloudyEffect.classList.remove('fade-out');
+				break;
+			case 'sunny':
+			default:
+				// 晴天或其他天气类型不显示特殊效果
+				break;
+		}
+		
+		// 清理fade-in类
+		setTimeout(() => {
+			const effects = [rainEffect, snowEffect, fogEffect, cloudyEffect, stormEffect];
+			effects.forEach(effect => {
+				if (effect) {
+					effect.classList.remove('fade-in');
+				}
+			});
+		}, 4000);
+	}
+	
+	// 昼夜视觉效果控制函数 - 基于光照强度的动态过渡
+	function updateDayNightVisualEffects(timeOfDay, lightIntensity = null) {
+		const dayNightOverlay = document.getElementById('dayNightOverlay');
+		
+		// 移除所有时间段类
+		dayNightOverlay.classList.remove('dawn', 'morning', 'noon', 'afternoon', 'dusk', 'evening', 'night', 'midnight');
+		
+		// 如果有光照强度数据，使用动态过渡
+		if (lightIntensity !== null) {
+			updateDynamicLighting(dayNightOverlay, timeOfDay, lightIntensity);
+		} else {
+			// 回退到基于时间段的静态切换
+			updateStaticTimeOfDay(dayNightOverlay, timeOfDay);
+		}
+	}
+	
+	// 动态光照过渡函数
+	function updateDynamicLighting(overlay, timeOfDay, lightIntensity) {
+		// 根据光照强度和时间段计算动态背景
+		const intensity = Math.max(0, Math.min(1, lightIntensity));
+		
+		// 定义不同时间段的基础颜色
+		const timeColors = {
+			'midnight': { r: 15, g: 15, b: 60, alpha: 0.7 },
+			'night': { r: 25, g: 25, b: 112, alpha: 0.6 },
+			'dawn': { r: 255, g: 182, b: 193, alpha: 0.4 },
+			'morning': { r: 255, g: 248, b: 220, alpha: 0.1 },
+			'noon': { r: 255, g: 255, b: 255, alpha: 0.0 },
+			'afternoon': { r: 255, g: 235, b: 205, alpha: 0.1 },
+			'dusk': { r: 255, g: 94, b: 77, alpha: 0.5 },
+			'evening': { r: 255, g: 94, b: 77, alpha: 0.5 }
+		};
+		
+		const baseColor = timeColors[timeOfDay] || timeColors['noon'];
+		
+		// 根据光照强度调整透明度
+		let adjustedAlpha = baseColor.alpha;
+		if (timeOfDay === 'night' || timeOfDay === 'midnight') {
+			// 夜晚：光照强度越低，覆盖层越暗
+			adjustedAlpha = baseColor.alpha * (1 - intensity * 0.3);
+		} else if (timeOfDay === 'dawn' || timeOfDay === 'dusk' || timeOfDay === 'evening') {
+			// 黄昏/黎明：保持基础透明度，轻微调整
+			adjustedAlpha = baseColor.alpha * (0.8 + intensity * 0.4);
+		} else {
+			// 白天：光照强度越高，覆盖层越透明
+			adjustedAlpha = baseColor.alpha * (1 - intensity * 0.8);
+		}
+		
+		// 应用动态背景色
+		if (timeOfDay === 'dawn' || timeOfDay === 'dusk' || timeOfDay === 'evening') {
+			// 渐变效果的时间段
+			overlay.style.background = `linear-gradient(to bottom, 
+				rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, ${adjustedAlpha}) 0%, 
+				rgba(${Math.floor(baseColor.r * 0.8)}, ${Math.floor(baseColor.g * 0.6)}, ${Math.floor(baseColor.b * 0.4)}, ${adjustedAlpha * 0.7}) 50%, 
+				rgba(${Math.floor(baseColor.r * 0.6)}, ${Math.floor(baseColor.g * 0.4)}, ${Math.floor(baseColor.b * 0.2)}, ${adjustedAlpha * 0.4}) 100%)`;
+		} else {
+			// 纯色效果的时间段
+			overlay.style.background = `rgba(${baseColor.r}, ${baseColor.g}, ${baseColor.b}, ${adjustedAlpha})`;
+		}
+	}
+	
+	// 静态时间段切换函数（回退方案）
+	function updateStaticTimeOfDay(overlay, timeOfDay) {
+		switch(timeOfDay) {
+			case 'dawn':
+				overlay.classList.add('dawn');
+				break;
+			case 'morning':
+				overlay.classList.add('morning');
+				break;
+			case 'noon':
+				overlay.classList.add('noon');
+				break;
+			case 'afternoon':
+				overlay.classList.add('afternoon');
+				break;
+			case 'dusk':
+				overlay.classList.add('dusk');
+				break;
+			case 'evening':
+				overlay.classList.add('evening');
+				break;
+			case 'night':
+				overlay.classList.add('night');
+				break;
+			case 'midnight':
+				overlay.classList.add('midnight');
+				break;
+			default:
+				overlay.classList.add('morning');
+				break;
+		}
+	}
+	
+	function updateWeatherDisplay() {
+		fetch('/api/weather')
 		.then(response => response.json())
 		.then(data => {
-			if (data.success) {
-				console.log('Simulation pause/resume successful');
-			} else {
-				alert('暂停/继续模拟失败: ' + data.message);
+			if (data.status === 'success') {
+				const weather = data.weather;
+				const weatherEmojis = {
+					'sunny': '☀️',
+					'cloudy': '☁️',
+					'rainy': '🌧️',
+					'stormy': '⛈️',
+					'snowy': '❄️',
+					'foggy': '🌫️'
+				};
+				
+				const weatherNames = {
+					'sunny': '晴天',
+					'cloudy': '多云',
+					'rainy': '雨天',
+					'stormy': '暴风雨',
+					'snowy': '雪天',
+					'foggy': '雾天'
+				};
+				
+				const emoji = weatherEmojis[weather.type] || '🌤️';
+				const name = weatherNames[weather.type] || weather.type;
+				
+				// 更新右侧面板
+				document.getElementById('current-weather').textContent = `${emoji} ${name}`;
+				document.getElementById('weather-details').textContent = 
+					`温度: ${weather.temperature}°C | 湿度: ${weather.humidity}%`;
+				
+				// 更新游戏区域浮动面板
+				const gameWeatherElement = document.getElementById('current-weather-game');
+				const gameWeatherDetailsElement = document.getElementById('weather-details-game');
+				if (gameWeatherElement) {
+					gameWeatherElement.textContent = `${emoji} ${name}`;
+				}
+				if (gameWeatherDetailsElement) {
+					gameWeatherDetailsElement.textContent = `温度: ${weather.temperature}°C`;
+				}
+				
+				// 更新视觉效果
+				updateWeatherVisualEffects(weather.type);
 			}
 		})
 		.catch(error => {
-			console.error('Error pausing simulation:', error);
-			alert('暂停/继续模拟时发生错误');
+			console.error('获取天气数据时出错:', error);
 		});
 	}
 	
-	// 停止模拟
-	function stopSimulation() {
-		fetch('/api/simulation/stop', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-			}
-		})
+	function updateTimeDisplay() {
+		fetch('/api/time')
 		.then(response => response.json())
 		.then(data => {
-			if (data.success) {
-				console.log('Simulation stopped successfully');
-			} else {
-				alert('停止模拟失败: ' + data.message);
+			if (data.status === 'success') {
+				const time = data.time;
+				const timeEmojis = {
+					'dawn': '🌅',
+					'morning': '🌅',
+					'noon': '☀️',
+					'afternoon': '🌇',
+					'evening': '🌆',
+					'night': '🌙',
+					'midnight': '🌙'
+				};
+				
+				const timeNames = {
+					'dawn': '黎明',
+					'morning': '上午',
+					'noon': '中午',
+					'afternoon': '下午',
+					'evening': '傍晚',
+					'night': '夜晚',
+					'midnight': '午夜'
+				};
+				
+				const emoji = timeEmojis[time.time_of_day] || '🌤️';
+				const name = timeNames[time.time_of_day] || time.time_of_day;
+				
+				// 更新右侧面板
+				document.getElementById('current-time').textContent = `${emoji} ${name}`;
+				
+				const lightPercent = Math.round(time.light_intensity * 100);
+				const activityPercent = Math.round(time.activity_modifier * 100);
+				document.getElementById('time-details').textContent = 
+					`光照: ${lightPercent}% | 活动: ${activityPercent}%`;
+				
+				// 更新游戏区域浮动面板
+				const gameTimeElement = document.getElementById('current-time-game');
+				const gameTimeDetailsElement = document.getElementById('time-details-game');
+				if (gameTimeElement) {
+					gameTimeElement.textContent = `${emoji} ${name}`;
+				}
+				if (gameTimeDetailsElement) {
+					gameTimeDetailsElement.textContent = `光照: ${lightPercent}%`;
+				}
+				
+				// 更新昼夜视觉效果，传递光照强度实现动态过渡
+				updateDayNightVisualEffects(time.time_of_day, time.light_intensity);
 			}
 		})
 		.catch(error => {
-			console.error('Error stopping simulation:', error);
-			alert('停止模拟时发生错误');
+			console.error('获取时间数据时出错:', error);
 		});
 	}
-	
+
+	// 文明演化状态显示
+	function updateCivilizationDisplay() {
+		fetch('/api/civilization/state')
+			.then(response => response.json())
+			.then(data => {
+				if (data.status === 'success' && data.state) {
+					const s = data.state;
+					const eraEl = document.getElementById('civilization-era');
+					const progEl = document.getElementById('civilization-progress-bar');
+					const popEl = document.getElementById('civilization-population');
+					const techEl = document.getElementById('civilization-tech');
+					const econEl = document.getElementById('civilization-economy');
+					const infraEl = document.getElementById('civilization-infrastructure');
+					const sidebarEconEl = document.getElementById('sidebar-economy-index');
+					const sidebarInfraEl = document.getElementById('sidebar-infrastructure-level');
+					const cultEl = document.getElementById('civilization-culture');
+					const stabEl = document.getElementById('civilization-stability');
+					const govEl = document.getElementById('civilization-governance');
+					const autoEl = document.getElementById('civilization-autopilot-status');
+
+					if (eraEl) {
+						eraEl.textContent = `${s.era_emoji} ${s.era_name}`;
+					}
+					if (progEl) {
+						progEl.style.width = `${Math.round(s.progress_to_next_era)}%`;
+					}
+					if (popEl) popEl.textContent = s.population.toLocaleString();
+					if (techEl) techEl.textContent = s.tech_index;
+					if (econEl) econEl.textContent = s.economy_index;
+					if (infraEl) infraEl.textContent = s.infrastructure_level;
+					if (sidebarEconEl) sidebarEconEl.textContent = Math.round(Number(s.economy_index));
+					if (sidebarInfraEl) sidebarInfraEl.textContent = Math.round(Number(s.infrastructure_level));
+					if (cultEl) cultEl.textContent = s.culture_index;
+					if (stabEl) stabEl.textContent = `${Math.round(s.stability)}%`;
+					if (govEl) govEl.textContent = s.governance;
+					if (autoEl) autoEl.textContent = s.auto_actions_enabled ? '开启' : '关闭';
+					// 将经济指数与基建等级同步到右侧对话记录
+					showEconomyInfraStatus(s);
+				}
+			})
+			.catch(err => {
+				console.error('获取文明状态失败:', err);
+			});
+	}
+
+	// 在右侧对话记录顶部信息条显示经济指数与基建等级
+	function showEconomyInfraStatus(state) {
+		try {
+			const econ = state?.economy_index;
+			const infra = state?.infrastructure_level;
+			if (econ == null || infra == null) return;
+			const econRound = Math.round(Number(econ));
+			const infraRound = Math.round(Number(infra));
+			const barEcon = document.getElementById('sidebar-economy-index');
+			const barInfra = document.getElementById('sidebar-infrastructure-level');
+			if (barEcon) barEcon.textContent = econRound;
+			if (barInfra) barInfra.textContent = infraRound;
+		} catch (_) {}
+	}
+
+	function loadCivilizationEvents() {
+		fetch('/api/civilization/events?limit=8')
+			.then(response => response.json())
+			.then(data => {
+				const container = document.getElementById('civilization-events');
+				if (!container) return;
+				container.innerHTML = '';
+				const events = data.events || [];
+				if (events.length === 0) {
+					container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 12px;">暂无文明事件</div>';
+					return;
+				}
+
+				events.forEach(ev => {
+					const item = document.createElement('div');
+					item.style.cssText = 'background: rgba(255, 255, 255, 0.08); border-left: 3px solid #FFC107; padding: 10px; margin-bottom: 8px; border-radius: 6px;';
+					const t = new Date(ev.timestamp);
+					const timeStr = isNaN(t.getTime()) ? ev.timestamp : t.toLocaleTimeString();
+					item.innerHTML = `
+						<div style="display:flex; align-items:center; justify-content: space-between; margin-bottom: 6px;">
+							<div style="display:flex; align-items:center;">
+								<span style="margin-right:8px;">🏛️</span>
+								<span style="color:#FFC107; font-weight:600; font-size:13px;">${ev.title || '文明事件'}</span>
+							</div>
+							<span style="color: rgba(255,255,255,0.6); font-size: 11px;">${timeStr}</span>
+						</div>
+						<div style="color: rgba(255,255,255,0.9); font-size: 12px; line-height: 1.5;">${ev.description || ''}</div>
+					`;
+					container.appendChild(item);
+				});
+			})
+			.catch(err => {
+				console.error('加载文明事件失败:', err);
+				const container = document.getElementById('civilization-events');
+				if (container) container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 12px;">加载失败</div>';
+			});
+	}
+
+	function sendCivilizationCommand(action, intensity = 1, metadata = {}) {
+		try {
+			fetch('/api/civilization/command', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action, intensity, metadata })
+			})
+				.then(res => res.json())
+				.then(data => {
+					if (data.status === 'success') {
+						updateCivilizationDisplay();
+						loadCivilizationEvents();
+					} else {
+						console.error('文明指令返回错误:', data);
+					}
+				})
+				.catch(err => {
+					console.error('发送文明指令失败:', err);
+				});
+		} catch (e) {
+			console.error('发送文明指令异常:', e);
+		}
+	}
+
+	// ================= 经济面板与事件 =================
+
+	function formatPriceKey(key) {
+		const map = {
+			'res:WOOD': '🪵 木材',
+			'res:STONE': '🪨 石头',
+			'res:METAL': '⛓️ 金属',
+			'res:FOOD': '🥫 食物',
+			'res:WATER': '💧 水',
+			'res:ENERGY': '⚡ 能源',
+			'res:LABOR': '🧑‍🏭 劳动力',
+			'item:food_pack': '🎒 食物包',
+			'item:material_brick': '🧱 砖块',
+			'item:tool_axe': '🪓 斧头',
+			'item:tool_pickaxe': '⛏️ 镐',
+			'item:tool_hammer': '🔨 锤子',
+		};
+		return map[key] || map[key.toLowerCase()] || key;
+	}
+
+	function renderEconomyPrices(prices) {
+		const container = document.getElementById('economy-price-list');
+		if (!container) return;
+		const order = [
+			'res:WOOD', 'res:STONE', 'res:METAL', 'res:FOOD', 'res:WATER', 'res:ENERGY', 'res:LABOR',
+			'item:food_pack', 'item:material_brick', 'item:tool_axe', 'item:tool_pickaxe', 'item:tool_hammer'
+		];
+		let keys = order.filter(k => prices && (k in prices));
+		// 追加任何未在order中的其他价格键
+		if (prices) {
+			Object.keys(prices).forEach(k => { if (!keys.includes(k)) keys.push(k); });
+		}
+		container.innerHTML = '';
+		if (!keys.length) {
+			container.innerHTML = '<div style="color: rgba(255,255,255,0.7); grid-column: 1 / -1; text-align: center; padding: 10px;">暂无价格数据</div>';
+			return;
+		}
+		keys.forEach(k => {
+			const val = Number(prices[k]).toFixed(2);
+			const card = document.createElement('div');
+			card.style.cssText = 'background: rgba(255,255,255,0.08); border-left: 3px solid #4CAF50; padding: 8px; border-radius: 6px; display: flex; align-items: center; justify-content: space-between;';
+			card.innerHTML = `
+				<span style="color: #4CAF50; font-weight: 600; font-size: 13px;">${formatPriceKey(k)}</span>
+				<span style="color: rgba(255,255,255,0.9); font-size: 13px;">₵ ${val}</span>
+			`;
+			container.appendChild(card);
+		});
+	}
+
+	function appendEconomyEvent(evt) {
+		const container = document.getElementById('economy-events');
+		if (!container) return;
+		const item = document.createElement('div');
+		item.style.cssText = 'background: rgba(255,255,255,0.08); border-left: 3px solid #2196F3; padding: 10px; margin-bottom: 8px; border-radius: 6px;';
+		const t = new Date(evt.timestamp);
+		const timeStr = isNaN(t.getTime()) ? (evt.timestamp || '') : t.toLocaleTimeString();
+		let title = '经济事件';
+		let icon = '💱';
+		let desc = '';
+		if (evt.type === 'trade') {
+			icon = '🤝';
+			title = '交易达成';
+			desc = `${evt.sender} ↔ ${evt.receiver}`;
+			const money = [];
+			if (evt.offer_money && Number(evt.offer_money) > 0) money.push(`出价 ₵${Number(evt.offer_money).toFixed(2)}`);
+			if (evt.request_money && Number(evt.request_money) > 0) money.push(`索价 ₵${Number(evt.request_money).toFixed(2)}`);
+			const resSummary = [];
+			if (evt.offer_resources) resSummary.push(`让出: ${Object.entries(evt.offer_resources).map(([k,v])=>`${k}×${v}`).join(', ')}`);
+			if (evt.request_resources) resSummary.push(`获得: ${Object.entries(evt.request_resources).map(([k,v])=>`${k}×${v}`).join(', ')}`);
+			if (evt.offer_items) resSummary.push(`让出物品: ${Object.entries(evt.offer_items).map(([k,v])=>`${k}×${v}`).join(', ')}`);
+			if (evt.request_items) resSummary.push(`获得物品: ${Object.entries(evt.request_items).map(([k,v])=>`${k}×${v}`).join(', ')}`);
+			desc = `${desc}${money.length?(' | '+money.join(' / ')):''}${resSummary.length?(' | '+resSummary.join(' / ')):''}`;
+		} else if (evt.type === 'craft') {
+			icon = '🛠️';
+			title = '合成完成';
+			desc = `${evt.agent} 产出 ${evt.output?.item || ''} × ${evt.output?.count || 1}`;
+		}
+		item.innerHTML = `
+			<div style="display:flex; align-items:center; justify-content: space-between; margin-bottom: 6px;">
+				<div style="display:flex; align-items:center;"><span style="margin-right:8px;">${icon}</span><span style="color:#2196F3; font-weight:600; font-size:13px;">${title}</span></div>
+				<span style="color: rgba(255,255,255,0.6); font-size: 11px;">${timeStr}</span>
+			</div>
+			<div style="color: rgba(255,255,255,0.9); font-size: 12px; line-height: 1.5;">${desc}</div>
+		`;
+		container.appendChild(item);
+		// 限制事件条目数量
+		const items = container.children;
+		if (items.length > 50) {
+			container.removeChild(items[0]);
+		}
+		container.scrollTop = container.scrollHeight;
+	}
+
+	function loadEconomyState() {
+		fetch('/api/economy/state')
+			.then(res => res.json())
+			.then(data => {
+				if (data && data.prices) {
+					renderEconomyPrices(data.prices);
+				}
+			})
+			.catch(err => console.error('加载经济状态失败:', err));
+	}
+
+	function loadEconomyEvents() {
+		fetch('/api/economy/events')
+			.then(res => res.json())
+			.then(data => {
+				const container = document.getElementById('economy-events');
+				if (!container) return;
+				container.innerHTML = '';
+				const events = data?.events || data || [];
+				if (Array.isArray(events)) {
+					events.forEach(ev => appendEconomyEvent(ev));
+				} else {
+					container.innerHTML = '<div style="color: rgba(255,255,255,0.7); text-align: center; padding: 10px;">暂无经济事件</div>';
+				}
+			})
+			.catch(err => console.error('加载经济事件失败:', err));
+	}
+
 	// 页面加载完成后初始化
 	document.addEventListener('DOMContentLoaded', function() {
 		// 初始化WebSocket连接
 		initializeSocket();
 		
-		// 绑定按钮事件
-		document.getElementById('startSimBtn').addEventListener('click', startSimulation);
-		document.getElementById('pauseSimBtn').addEventListener('click', pauseSimulation);
-		document.getElementById('stopSimBtn').addEventListener('click', stopSimulation);
+		// 初始化回放按钮状态
+		updateReplayButtons('stopped');
 		
-		// 定期检查模拟状态
+		// 初始化地形事件显示
+		loadTerrainEvents();
+		
+		// 初始化天气和时间显示
+		updateWeatherDisplay();
+		updateTimeDisplay();
+		updateCivilizationDisplay();
+		loadCivilizationEvents();
+
+		// 初始化经济面板与事件
+		loadEconomyState();
+		loadEconomyEvents();
+		const refreshBtn = document.getElementById('refreshEconomyBtn');
+		if (refreshBtn) {
+			refreshBtn.addEventListener('click', () => {
+				loadEconomyState();
+				loadEconomyEvents();
+			});
+		}
+
+		// 文明指令按钮和输入绑定
+		const cmdInput = document.getElementById('civilization-cmd-input');
+		const cmdSubmit = document.getElementById('civilization-cmd-submit');
+		if (cmdSubmit) {
+			cmdSubmit.addEventListener('click', () => {
+				const val = (cmdInput && cmdInput.value || '').trim();
+				if (!val) {
+					// 默认当作宣传
+					sendCivilizationCommand('宣传');
+					return;
+				}
+				sendCivilizationCommand(val);
+				cmdInput.value = '';
+			});
+		}
+		const btnBuild = document.getElementById('btn-civ-build');
+		const btnResearch = document.getElementById('btn-civ-research');
+		const btnStabilize = document.getElementById('btn-civ-stabilize');
+		const btnPolicy = document.getElementById('btn-civ-policy');
+		if (btnBuild) btnBuild.addEventListener('click', () => sendCivilizationCommand('建设'));
+		if (btnResearch) btnResearch.addEventListener('click', () => sendCivilizationCommand('科研'));
+		if (btnStabilize) btnStabilize.addEventListener('click', () => sendCivilizationCommand('稳定'));
+		if (btnPolicy) btnPolicy.addEventListener('click', () => sendCivilizationCommand('政策'));
+		
+		// 定期更新地形和社会关系数据
 		setInterval(() => {
-			fetch('/api/simulation/status')
-				.then(response => response.json())
-				.then(data => {
-					updateSimulationStatus(data);
-				})
-				.catch(error => {
-					console.error('Error checking simulation status:', error);
-				});
-		}, 2000); // 每2秒检查一次状态
+			const terrainPanel = document.getElementById('terrainPanel');
+			const socialPanel = document.getElementById('socialPanel');
+			
+			if (terrainPanel && terrainPanel.style.display !== 'none') {
+				loadTerrainEvents();
+			}
+			if (socialPanel && socialPanel.style.display !== 'none') {
+				loadSocialRelationships();
+			}
+		}, 10000); // 每10秒更新一次
+		
+		// 定期更新天气和时间显示（自动变化系统）
+		setInterval(() => {
+			updateWeatherDisplay();
+			updateTimeDisplay();
+			updateOnlineResidentsCount();
+		}, 2000); // 每2秒更新一次，确保自动变化及时显示
+
+		// 定期更新文明状态与事件
+		setInterval(() => {
+			updateCivilizationDisplay();
+			loadCivilizationEvents();
+		}, 4000);
+
+		// 定期刷新经济价格（事件通过Socket实时追加）
+		setInterval(() => {
+			loadEconomyState();
+		}, 5000);
+
+		// 初始化直播自动巡航控制
+		setupAutoNavControls();
+		
+		// 对话控制功能
+		setupChatControls();
+
 	});
+	
+	// 更新在线居民数量
+	function updateOnlineResidentsCount() {
+		// 这里可以从API获取实际的在线居民数量
+		// 暂时使用随机数模拟
+		const count = Math.floor(Math.random() * 5) + 6; // 6-10人
+		const countElement = document.getElementById('online-residents-count');
+		if (countElement) {
+			countElement.textContent = `${count} 人`;
+		}
+	}
+	
+	// 设置对话控制按钮功能
+	function setupChatControls() {
+		const startBtn = document.getElementById('chat-start-btn');
+		const replayBtn = document.getElementById('chat-replay-btn');
+		const pauseBtn = document.getElementById('chat-pause-btn');
+		const stopBtn = document.getElementById('chat-stop-btn');
+		const clearBtn = document.getElementById('chat-clear-btn');
+		
+		if (startBtn) {
+			startBtn.addEventListener('click', () => {
+				console.log('开始对话');
+				// 这里可以添加开始对话的逻辑
+				showChatMessage('系统', '对话已开始');
+			});
+		}
+		
+		if (replayBtn) {
+			replayBtn.addEventListener('click', () => {
+				console.log('回放对话');
+				// 这里可以添加回放对话的逻辑
+				showChatMessage('系统', '开始回放历史对话');
+			});
+		}
+		
+		if (pauseBtn) {
+			pauseBtn.addEventListener('click', () => {
+				console.log('暂停对话');
+				// 这里可以添加暂停对话的逻辑
+				showChatMessage('系统', '对话已暂停');
+			});
+		}
+		
+		if (stopBtn) {
+			stopBtn.addEventListener('click', () => {
+				console.log('停止对话');
+				// 这里可以添加停止对话的逻辑
+				showChatMessage('系统', '对话已停止');
+			});
+		}
+		
+		if (clearBtn) {
+			clearBtn.addEventListener('click', () => {
+				console.log('清除对话');
+				// 清除聊天记录
+				const chatMessages = document.getElementById('chatMessages');
+				if (chatMessages) {
+					chatMessages.innerHTML = '<div class="chat-message"><div class="agent-name">系统</div><div class="message-content">对话记录已清除</div><div class="timestamp">刚刚</div></div>';
+				}
+			});
+		}
+	}
+	
+	// 显示聊天消息的辅助函数
+	function showChatMessage(sender, message) {
+		const chatMessages = document.getElementById('chatMessages');
+		if (chatMessages) {
+			const messageDiv = document.createElement('div');
+			messageDiv.className = 'chat-message';
+			messageDiv.innerHTML = `
+				<div class="agent-name">${sender}</div>
+				<div class="message-content">${message}</div>
+				<div class="timestamp">刚刚</div>
+			`;
+			chatMessages.appendChild(messageDiv);
+			chatMessages.scrollTop = chatMessages.scrollHeight;
+		}
+	}
+	
+	// 清除对话记录的函数
+	function clearChatMessages() {
+		const chatMessages = document.getElementById('chatMessages');
+		if (chatMessages) {
+			// 清除所有消息，只保留欢迎消息
+			chatMessages.innerHTML = `
+				<div class="chat-message" style="background: rgba(76, 175, 80, 0.15); border-left: 3px solid #4CAF50; margin-bottom: 15px;">
+					<div class="agent-name" style="color: #4CAF50; font-size: 15px; font-weight: 700;">💬 系统消息</div>
+					<div class="message-content" style="color: rgba(255, 255, 255, 0.95); font-size: 14px; line-height: 1.6; margin-top: 8px;">对话记录已清除，等待新的对话内容...</div>
+					<div class="timestamp" style="color: rgba(255, 255, 255, 0.6); font-size: 12px; margin-top: 8px;">${new Date().toLocaleTimeString('zh-CN')}</div>
+				</div>
+			`;
+			
+			// 清除重复消息记录
+			lastMessages = {};
+			
+			console.log('对话记录已清除');
+		}
+	}
 </script>

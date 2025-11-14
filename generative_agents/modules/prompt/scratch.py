@@ -143,7 +143,98 @@ class Scratch:
         ]
         return {"prompt": prompt, "callback": _callback, "failsafe": failsafe}
 
-    def prompt_schedule_daily(self, wake_up, daily_schedule):
+    def prompt_schedule_init_weather(self, wake_up, weather_data, weather_effects):
+        """天气感知的初始日程安排"""
+        weather_description = self._format_weather_description(weather_data)
+        weather_effects_desc = self._format_weather_effects(weather_effects)
+        
+        prompt = self.build_prompt(
+            "schedule_init_weather",
+            {
+                "base_desc": self._base_desc(),
+                "lifestyle": self.config["lifestyle"],
+                "agent": self.name,
+                "wake_up": wake_up,
+                "weather_description": weather_description,
+                "weather_effects": weather_effects_desc,
+            }
+        )
+
+        def _callback(response):
+            patterns = [
+                "\d{1,2}\. (.*)。",
+                "\d{1,2}\. (.*)",
+                "\d{1,2}\) (.*)。",
+                "\d{1,2}\) (.*)",
+                "(.*)。",
+                "(.*)",
+            ]
+            return parse_llm_output(response, patterns, mode="match_all")
+
+        failsafe = [
+            "早上6点起床并完成早餐的例行工作",
+            "早上7点吃早餐",
+            "早上8点根据天气选择合适的活动",
+            "中午12点吃午饭",
+            "下午1点小睡一会儿",
+            "晚上7点放松一下，看电视",
+            "晚上11点睡觉",
+        ]
+        return {"prompt": prompt, "callback": _callback, "failsafe": failsafe}
+
+    def _format_weather_description(self, weather_data):
+        """格式化天气描述"""
+        if not weather_data:
+            return "天气信息不可用"
+        
+        weather_info = weather_data.get("weather", {})
+        weather_type = weather_info.get("type", "unknown")
+        temperature = weather_info.get("temperature", 20)
+        humidity = weather_info.get("humidity", 50)
+        
+        weather_names = {
+            "sunny": "晴天",
+            "cloudy": "多云", 
+            "rainy": "雨天",
+            "stormy": "暴风雨",
+            "snowy": "雪天",
+            "foggy": "雾天",
+            "windy": "大风"
+        }
+        
+        weather_name = weather_names.get(weather_type, weather_type)
+        return f"{weather_name}，温度{temperature}°C，湿度{humidity}%"
+
+    def _format_weather_effects(self, weather_effects):
+        """格式化天气影响描述"""
+        if not weather_effects:
+            return "天气影响不明显"
+        
+        effects = []
+        
+        movement_modifier = weather_effects.get("movement_speed_modifier", 1.0)
+        if movement_modifier < 0.8:
+            effects.append("移动速度受到影响")
+        
+        social_modifier = weather_effects.get("social_activity_modifier", 1.0)
+        if social_modifier < 0.8:
+            effects.append("不适合社交活动")
+        elif social_modifier > 1.1:
+            effects.append("适合社交活动")
+        
+        visibility_modifier = weather_effects.get("visibility_modifier", 1.0)
+        if visibility_modifier < 0.5:
+            effects.append("能见度很低")
+        
+        mood_modifier = weather_effects.get("mood_modifier", 0.0)
+        if mood_modifier < -0.1:
+            effects.append("可能影响心情")
+        elif mood_modifier > 0.1:
+            effects.append("有助于改善心情")
+        
+        return "；".join(effects) if effects else "天气影响较小"
+
+    def prompt_schedule_daily(self, wake_up, init_schedule):
         hourly_schedule = ""
         for i in range(wake_up):
             hourly_schedule += f"[{i}:00] 睡觉\n"

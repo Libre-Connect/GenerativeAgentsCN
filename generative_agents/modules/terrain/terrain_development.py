@@ -38,19 +38,52 @@ class ResourceType(Enum):
 
 
 class BuildingType(Enum):
-    """建筑类型"""
-    HOUSE = "house"                 # 住宅
+    """建筑类型 - 扩展为城市级别"""
+    # 住宅类型
+    HOUSE = "house"                 # 独栋住宅
+    APARTMENT = "apartment"         # 公寓
+    CONDO = "condo"                 # 公寓楼
+    
+    # 商业类型
     SHOP = "shop"                   # 商店
+    MALL = "mall"                   # 购物中心
+    OFFICE = "office"               # 办公楼
+    RESTAURANT = "restaurant"       # 餐厅
+    HOTEL = "hotel"                 # 酒店
+    
+    # 工业类型
     FACTORY = "factory"             # 工厂
+    WAREHOUSE = "warehouse"         # 仓库
+    WORKSHOP = "workshop"           # 工坊
+    
+    # 基础设施
     FARM = "farm"                   # 农场
     MINE = "mine"                   # 矿场
     ROAD = "road"                   # 道路
+    HIGHWAY = "highway"             # 高速公路
     BRIDGE = "bridge"               # 桥梁
     PARK = "park"                   # 公园
     SCHOOL = "school"               # 学校
+    UNIVERSITY = "university"       # 大学
     HOSPITAL = "hospital"           # 医院
+    CLINIC = "clinic"               # 诊所
     POWER_PLANT = "power_plant"     # 发电厂
     WATER_TREATMENT = "water_treatment"  # 水处理厂
+    POLICE_STATION = "police_station"    # 警察局
+    FIRE_STATION = "fire_station"        # 消防站
+    GOVERNMENT = "government"            # 政府大楼
+    LIBRARY = "library"                  # 图书馆
+    MUSEUM = "museum"                    # 博物馆
+    STADIUM = "stadium"                  # 体育场
+    CINEMA = "cinema"                    # 电影院
+    BANK = "bank"                        # 银行
+    CHURCH = "church"                    # 教堂
+    
+    # 交通设施
+    BUS_STATION = "bus_station"          # 公交站
+    TRAIN_STATION = "train_station"      # 火车站
+    AIRPORT = "airport"                  # 机场
+    PARKING_LOT = "parking_lot"          # 停车场
 
 
 class DevelopmentPriority(Enum):
@@ -61,9 +94,25 @@ class DevelopmentPriority(Enum):
     URGENT = 4
 
 
+class CityDistrict(Enum):
+    """城市区域类型"""
+    DOWNTOWN = "downtown"           # 市中心 - 商业区
+    RESIDENTIAL = "residential"     # 住宅区
+    INDUSTRIAL = "industrial"       # 工业区
+    COMMERCIAL = "commercial"       # 商业区
+    GOVERNMENT = "government"       # 政府区
+    EDUCATION = "education"         # 教育区
+    MEDICAL = "medical"             # 医疗区
+    ENTERTAINMENT = "entertainment" # 娱乐区
+    TRANSPORT = "transport"         # 交通区
+    PARK = "park"                   # 公园区
+    SUBURBAN = "suburban"           # 郊区
+    RURAL = "rural"                 # 农村区
+
+
 @dataclass
 class TerrainTile:
-    """地形瓦片"""
+    """地形瓦片 - 城市级别扩展"""
     x: int
     y: int
     terrain_type: TerrainType
@@ -75,6 +124,15 @@ class TerrainTile:
     development_level: float       # 开发程度 (0-1)
     population_capacity: int       # 人口容量
     current_population: int        # 当前人口
+    
+    # 城市相关属性
+    city_district: Optional[CityDistrict] = None  # 城市区域类型
+    land_value: float = 0.0         # 土地价值 (0-1)
+    traffic_density: float = 0.0    # 交通密度 (0-1)
+    pollution_level: float = 0.0    # 污染水平 (0-1)
+    crime_rate: float = 0.0         # 犯罪率 (0-1)
+    happiness_index: float = 0.5   # 幸福指数 (0-1)
+    infrastructure_quality: float = 0.0  # 基础设施质量 (0-1)
     
     def __post_init__(self):
         if not self.resources:
@@ -196,47 +254,54 @@ class DevelopmentProject:
 
 
 class TerrainDevelopmentEngine:
-    """地形开发引擎"""
+    """地形开发引擎 - 城市级别"""
     
-    def __init__(self, width: int = 50, height: int = 50):
+    def __init__(self, width: int = 100, height: int = 100, city_type: str = "metropolis"):
         self.width = width
         self.height = height
+        self.city_type = city_type  # metropolis, large_city, medium_city, small_city
         self.terrain_map: Dict[Tuple[int, int], TerrainTile] = {}
         self.buildings: Dict[str, Building] = {}
         self.projects: Dict[str, DevelopmentProject] = {}
         self.global_resources: Dict[ResourceType, float] = {}
         self.building_templates = self._initialize_building_templates()
+        self.city_districts: Dict[CityDistrict, List[Tuple[int, int]]] = {}
         
         # 初始化地形
-        self._generate_initial_terrain()
+        self._generate_city_terrain()
         self._initialize_global_resources()
+        self._generate_city_districts()
     
-    def _generate_initial_terrain(self):
-        """生成初始地形"""
-        # 使用柏林噪声生成自然地形
+    def _generate_city_terrain(self):
+        """生成城市地形 - 基于真实城市规划"""
+        # 确定城市规模和特征
+        city_config = self._get_city_config()
+        
+        # 生成基础地形
         for x in range(self.width):
             for y in range(self.height):
-                # 简化的地形生成逻辑
-                noise_value = self._simple_noise(x, y)
+                # 使用更复杂的噪声生成地形
+                noise_value = self._city_noise(x, y, city_config)
                 elevation = noise_value * 100
                 
-                if elevation < 20:
-                    terrain_type = TerrainType.WATER
-                elif elevation < 40:
-                    terrain_type = TerrainType.PLAIN
-                elif elevation < 60:
-                    terrain_type = TerrainType.HILL
-                elif elevation < 80:
-                    terrain_type = TerrainType.FOREST
+                # 城市地形生成逻辑 - 更适合建设
+                if elevation < 15:
+                    terrain_type = TerrainType.WATER  # 河流/湖泊
+                elif elevation < 25:
+                    terrain_type = TerrainType.SWAMP  # 湿地
+                elif elevation < 70:
+                    terrain_type = TerrainType.PLAIN  # 平原 - 主要建设区域
+                elif elevation < 85:
+                    terrain_type = TerrainType.HILL   # 丘陵 - 可建设
+                elif elevation < 95:
+                    terrain_type = TerrainType.FOREST # 森林 - 保护区
                 else:
-                    terrain_type = TerrainType.MOUNTAIN
+                    terrain_type = TerrainType.MOUNTAIN # 山地 - 限制建设
                 
-                # 随机添加一些特殊地形
-                if random.random() < 0.05:
-                    terrain_type = random.choice([TerrainType.DESERT, TerrainType.SWAMP])
-                
+                # 计算城市相关属性
                 fertility = max(0, min(1, 1 - elevation / 100 + random.uniform(-0.2, 0.2)))
-                accessibility = max(0, min(1, 1 - elevation / 150 + random.uniform(-0.1, 0.1)))
+                accessibility = self._calculate_city_accessibility(x, y, city_config)
+                land_value = self._calculate_land_value(x, y, elevation, accessibility)
                 
                 tile = TerrainTile(
                     x=x, y=y,
@@ -248,10 +313,182 @@ class TerrainDevelopmentEngine:
                     buildings=[],
                     development_level=0.0,
                     population_capacity=self._calculate_population_capacity(terrain_type),
-                    current_population=0
+                    current_population=0,
+                    land_value=land_value,
+                    infrastructure_quality=accessibility * 0.8  # 基础设施质量与可达性相关
                 )
                 
                 self.terrain_map[(x, y)] = tile
+    
+    def _get_city_config(self) -> dict:
+        """获取城市配置"""
+        configs = {
+            "metropolis": {
+                "population_target": 1000000,
+                "center_size": 15,
+                "district_count": 12,
+                "road_density": 0.8,
+                "commercial_ratio": 0.3,
+                "residential_ratio": 0.5,
+                "industrial_ratio": 0.2
+            },
+            "large_city": {
+                "population_target": 500000,
+                "center_size": 10,
+                "district_count": 8,
+                "road_density": 0.7,
+                "commercial_ratio": 0.25,
+                "residential_ratio": 0.55,
+                "industrial_ratio": 0.2
+            },
+            "medium_city": {
+                "population_target": 100000,
+                "center_size": 7,
+                "district_count": 6,
+                "road_density": 0.6,
+                "commercial_ratio": 0.2,
+                "residential_ratio": 0.6,
+                "industrial_ratio": 0.2
+            },
+            "small_city": {
+                "population_target": 50000,
+                "center_size": 5,
+                "district_count": 4,
+                "road_density": 0.5,
+                "commercial_ratio": 0.15,
+                "residential_ratio": 0.65,
+                "industrial_ratio": 0.2
+            }
+        }
+        return configs.get(self.city_type, configs["medium_city"])
+    
+    def _city_noise(self, x: int, y: int, city_config: dict) -> float:
+        """城市噪声生成 - 更适合城市规划"""
+        # 基础地形噪声
+        base_noise = (math.sin(x * 0.05) + math.cos(y * 0.05) + 
+                     math.sin(x * 0.02 + y * 0.02)) / 3
+        
+        # 城市中心梯度 - 创建更平坦的中心区域
+        center_x, center_y = self.width // 2, self.height // 2
+        distance_from_center = math.sqrt((x - center_x)**2 + (y - center_y)**2)
+        max_distance = math.sqrt(center_x**2 + center_y**2)
+        
+        # 中心区域更平坦
+        if distance_from_center < city_config["center_size"]:
+            center_flattening = 0.8
+        else:
+            center_flattening = 1.0 - (distance_from_center - city_config["center_size"]) / max_distance * 0.3
+        
+        return (base_noise * center_flattening + 0.5) / 2
+    
+    def _calculate_city_accessibility(self, x: int, y: int, city_config: dict) -> float:
+        """计算城市可达性"""
+        center_x, center_y = self.width // 2, self.height // 2
+        distance_from_center = math.sqrt((x - center_x)**2 + (y - center_y)**2)
+        max_distance = math.sqrt(center_x**2 + center_y**2)
+        
+        # 中心区域可达性最高
+        center_accessibility = max(0, 1.0 - distance_from_center / max_distance)
+        
+        # 添加一些随机变化模拟道路规划
+        road_influence = math.sin(x * 0.1) * math.cos(y * 0.1) * 0.2
+        
+        return max(0, min(1, center_accessibility + road_influence + random.uniform(-0.1, 0.1)))
+    
+    def _calculate_land_value(self, x: int, y: int, elevation: float, accessibility: float) -> float:
+        """计算土地价值"""
+        # 土地价值基于可达性和地形
+        base_value = accessibility * 0.7
+        elevation_factor = max(0, 1.0 - elevation / 100)  # 低海拔更有价值
+        
+        return max(0, min(1, base_value + elevation_factor * 0.3 + random.uniform(-0.1, 0.1)))
+    
+    def _generate_city_districts(self):
+        """生成城市区域"""
+        city_config = self._get_city_config()
+        center_x, center_y = self.width // 2, self.height // 2
+        
+        # 定义各区域的优先位置
+        districts_config = {
+            CityDistrict.DOWNTOWN: {
+                "center_offset": (0, 0),
+                "radius": city_config["center_size"],
+                "priority_buildings": [BuildingType.OFFICE, BuildingType.MALL, BuildingType.BANK, BuildingType.HOTEL]
+            },
+            CityDistrict.RESIDENTIAL: {
+                "center_offset": (0, city_config["center_size"] + 5),
+                "radius": city_config["center_size"] * 1.5,
+                "priority_buildings": [BuildingType.APARTMENT, BuildingType.CONDO, BuildingType.HOUSE, BuildingType.PARK]
+            },
+            CityDistrict.INDUSTRIAL: {
+                "center_offset": (city_config["center_size"] + 5, 0),
+                "radius": city_config["center_size"],
+                "priority_buildings": [BuildingType.FACTORY, BuildingType.WAREHOUSE, BuildingType.WORKSHOP]
+            },
+            CityDistrict.COMMERCIAL: {
+                "center_offset": (-city_config["center_size"] - 5, 0),
+                "radius": city_config["center_size"],
+                "priority_buildings": [BuildingType.SHOP, BuildingType.RESTAURANT, BuildingType.MALL]
+            },
+            CityDistrict.EDUCATION: {
+                "center_offset": (0, -city_config["center_size"] - 5),
+                "radius": city_config["center_size"],
+                "priority_buildings": [BuildingType.UNIVERSITY, BuildingType.SCHOOL, BuildingType.LIBRARY]
+            },
+            CityDistrict.MEDICAL: {
+                "center_offset": (city_config["center_size"] + 5, city_config["center_size"] + 5),
+                "radius": city_config["center_size"] * 0.8,
+                "priority_buildings": [BuildingType.HOSPITAL, BuildingType.CLINIC]
+            },
+            CityDistrict.ENTERTAINMENT: {
+                "center_offset": (-city_config["center_size"] - 5, -city_config["center_size"] - 5),
+                "radius": city_config["center_size"] * 0.8,
+                "priority_buildings": [BuildingType.CINEMA, BuildingType.STADIUM, BuildingType.MUSEUM]
+            },
+            CityDistrict.GOVERNMENT: {
+                "center_offset": (city_config["center_size"] + 5, -city_config["center_size"] - 5),
+                "radius": city_config["center_size"] * 0.6,
+                "priority_buildings": [BuildingType.GOVERNMENT, BuildingType.POLICE_STATION, BuildingType.FIRE_STATION]
+            },
+            CityDistrict.TRANSPORT: {
+                "center_offset": (-city_config["center_size"] - 5, city_config["center_size"] + 5),
+                "radius": city_config["center_size"] * 0.7,
+                "priority_buildings": [BuildingType.BUS_STATION, BuildingType.TRAIN_STATION, BuildingType.PARKING_LOT]
+            },
+            CityDistrict.PARK: {
+                "center_offset": (0, city_config["center_size"] * 2),
+                "radius": city_config["center_size"] * 0.5,
+                "priority_buildings": [BuildingType.PARK]
+            },
+            CityDistrict.SUBURBAN: {
+                "center_offset": (city_config["center_size"] * 2, city_config["center_size"] * 2),
+                "radius": city_config["center_size"] * 1.2,
+                "priority_buildings": [BuildingType.HOUSE, BuildingType.APARTMENT, BuildingType.SHOP, BuildingType.PARK]
+            },
+            CityDistrict.RURAL: {
+                "center_offset": (-city_config["center_size"] * 2, city_config["center_size"] * 2),
+                "radius": city_config["center_size"] * 1.5,
+                "priority_buildings": [BuildingType.FARM, BuildingType.HOUSE, BuildingType.WORKSHOP]
+            }
+        }
+        
+        # 为每个区域分配瓦片
+        for district, config in districts_config.items():
+            district_tiles = []
+            offset_x, offset_y = config["center_offset"]
+            center_x, center_y = self.width // 2 + offset_x, self.height // 2 + offset_y
+            radius = config["radius"]
+            
+            # 找到区域内的所有瓦片
+            for x in range(max(0, center_x - radius), min(self.width, center_x + radius)):
+                for y in range(max(0, center_y - radius), min(self.height, center_y + radius)):
+                    distance = math.sqrt((x - center_x)**2 + (y - center_y)**2)
+                    if distance <= radius and (x, y) in self.terrain_map:
+                        tile = self.terrain_map[(x, y)]
+                        tile.city_district = district
+                        district_tiles.append((x, y))
+            
+            self.city_districts[district] = district_tiles
     
     def _simple_noise(self, x: int, y: int) -> float:
         """简单的噪声函数"""
@@ -287,8 +524,9 @@ class TerrainDevelopmentEngine:
         }
     
     def _initialize_building_templates(self) -> Dict[BuildingType, dict]:
-        """初始化建筑模板"""
+        """初始化建筑模板 - 城市级别"""
         return {
+            # 住宅类型
             BuildingType.HOUSE: {
                 "construction_cost": {ResourceType.WOOD: 50, ResourceType.STONE: 30},
                 "maintenance_cost": {ResourceType.ENERGY: 2},
@@ -297,22 +535,66 @@ class TerrainDevelopmentEngine:
                 "workers_needed": 0,
                 "population_increase": 4
             },
-            BuildingType.FARM: {
-                "construction_cost": {ResourceType.WOOD: 30, ResourceType.STONE: 10},
-                "maintenance_cost": {ResourceType.WATER: 5},
-                "production": {ResourceType.FOOD: 20},
-                "construction_time": 5,
+            BuildingType.APARTMENT: {
+                "construction_cost": {ResourceType.STONE: 200, ResourceType.METAL: 150, ResourceType.WOOD: 100},
+                "maintenance_cost": {ResourceType.ENERGY: 15, ResourceType.WATER: 10},
+                "production": {},
+                "construction_time": 30,
+                "workers_needed": 0,
+                "population_increase": 20
+            },
+            BuildingType.CONDO: {
+                "construction_cost": {ResourceType.STONE: 300, ResourceType.METAL: 200, ResourceType.WOOD: 80},
+                "maintenance_cost": {ResourceType.ENERGY: 20, ResourceType.WATER: 15},
+                "production": {},
+                "construction_time": 45,
+                "workers_needed": 0,
+                "population_increase": 15
+            },
+            
+            # 商业类型
+            BuildingType.SHOP: {
+                "construction_cost": {ResourceType.WOOD: 40, ResourceType.STONE: 20},
+                "maintenance_cost": {ResourceType.ENERGY: 3},
+                "production": {},
+                "construction_time": 8,
                 "workers_needed": 2,
                 "population_increase": 0
             },
-            BuildingType.MINE: {
-                "construction_cost": {ResourceType.WOOD: 40, ResourceType.METAL: 20},
-                "maintenance_cost": {ResourceType.ENERGY: 10},
-                "production": {ResourceType.STONE: 15, ResourceType.METAL: 8},
-                "construction_time": 10,
-                "workers_needed": 5,
+            BuildingType.MALL: {
+                "construction_cost": {ResourceType.STONE: 500, ResourceType.METAL: 300, ResourceType.WOOD: 200},
+                "maintenance_cost": {ResourceType.ENERGY: 50, ResourceType.WATER: 30},
+                "production": {},
+                "construction_time": 60,
+                "workers_needed": 50,
                 "population_increase": 0
             },
+            BuildingType.OFFICE: {
+                "construction_cost": {ResourceType.STONE: 400, ResourceType.METAL: 250, ResourceType.WOOD: 150},
+                "maintenance_cost": {ResourceType.ENERGY: 40, ResourceType.WATER: 25},
+                "production": {},
+                "construction_time": 50,
+                "workers_needed": 30,
+                "population_increase": 0
+            },
+            BuildingType.RESTAURANT: {
+                "construction_cost": {ResourceType.STONE: 80, ResourceType.WOOD: 60, ResourceType.METAL: 40},
+                "maintenance_cost": {ResourceType.ENERGY: 12, ResourceType.WATER: 8, ResourceType.FOOD: 5},
+                "production": {},
+                "construction_time": 20,
+                "workers_needed": 8,
+                "population_increase": 0
+            },
+            BuildingType.HOTEL: {
+                "construction_cost": {ResourceType.STONE: 350, ResourceType.METAL: 200, ResourceType.WOOD: 180},
+                "maintenance_cost": {ResourceType.ENERGY: 35, ResourceType.WATER: 25},
+                "production": {},
+                "construction_time": 40,
+                "workers_needed": 25,
+                "population_increase": 0
+            },
+            
+            # 工业类型
             BuildingType.FACTORY: {
                 "construction_cost": {ResourceType.STONE: 80, ResourceType.METAL: 50},
                 "maintenance_cost": {ResourceType.ENERGY: 15, ResourceType.WATER: 8},
@@ -321,6 +603,34 @@ class TerrainDevelopmentEngine:
                 "workers_needed": 8,
                 "population_increase": 0
             },
+            BuildingType.WAREHOUSE: {
+                "construction_cost": {ResourceType.STONE: 100, ResourceType.METAL: 80, ResourceType.WOOD: 60},
+                "maintenance_cost": {ResourceType.ENERGY: 5},
+                "production": {},
+                "construction_time": 25,
+                "workers_needed": 3,
+                "population_increase": 0
+            },
+            BuildingType.WORKSHOP: {
+                "construction_cost": {ResourceType.WOOD: 50, ResourceType.METAL: 30, ResourceType.STONE: 40},
+                "maintenance_cost": {ResourceType.ENERGY: 8},
+                "production": {ResourceType.METAL: 5},
+                "construction_time": 12,
+                "workers_needed": 4,
+                "population_increase": 0
+            },
+            
+            # 农业类型
+            BuildingType.FARM: {
+                "construction_cost": {ResourceType.WOOD: 30, ResourceType.STONE: 10},
+                "maintenance_cost": {ResourceType.WATER: 5},
+                "production": {ResourceType.FOOD: 20},
+                "construction_time": 5,
+                "workers_needed": 2,
+                "population_increase": 0
+            },
+            
+            # 基础设施类型
             BuildingType.ROAD: {
                 "construction_cost": {ResourceType.STONE: 20},
                 "maintenance_cost": {},
@@ -329,11 +639,159 @@ class TerrainDevelopmentEngine:
                 "workers_needed": 0,
                 "population_increase": 0
             },
-            BuildingType.SHOP: {
-                "construction_cost": {ResourceType.WOOD: 40, ResourceType.STONE: 20},
-                "maintenance_cost": {ResourceType.ENERGY: 3},
+            BuildingType.BRIDGE: {
+                "construction_cost": {ResourceType.STONE: 150, ResourceType.METAL: 100},
+                "maintenance_cost": {ResourceType.ENERGY: 2},
                 "production": {},
-                "construction_time": 8,
+                "construction_time": 35,
+                "workers_needed": 0,
+                "population_increase": 0
+            },
+            BuildingType.WALL: {
+                "construction_cost": {ResourceType.STONE: 60, ResourceType.METAL: 20},
+                "maintenance_cost": {},
+                "production": {},
+                "construction_time": 15,
+                "workers_needed": 0,
+                "population_increase": 0
+            },
+            
+            # 教育类型
+            BuildingType.SCHOOL: {
+                "construction_cost": {ResourceType.STONE: 120, ResourceType.WOOD: 80, ResourceType.METAL: 40},
+                "maintenance_cost": {ResourceType.ENERGY: 15, ResourceType.WATER: 10},
+                "production": {},
+                "construction_time": 25,
+                "workers_needed": 15,
+                "population_increase": 0
+            },
+            BuildingType.UNIVERSITY: {
+                "construction_cost": {ResourceType.STONE: 400, ResourceType.WOOD: 200, ResourceType.METAL: 150},
+                "maintenance_cost": {ResourceType.ENERGY: 45, ResourceType.WATER: 30},
+                "production": {},
+                "construction_time": 80,
+                "workers_needed": 80,
+                "population_increase": 0
+            },
+            BuildingType.LIBRARY: {
+                "construction_cost": {ResourceType.STONE: 200, ResourceType.WOOD: 150, ResourceType.METAL: 80},
+                "maintenance_cost": {ResourceType.ENERGY: 20, ResourceType.WATER: 12},
+                "production": {},
+                "construction_time": 35,
+                "workers_needed": 12,
+                "population_increase": 0
+            },
+            
+            # 医疗类型
+            BuildingType.HOSPITAL: {
+                "construction_cost": {ResourceType.STONE: 300, ResourceType.METAL: 200, ResourceType.WOOD: 150},
+                "maintenance_cost": {ResourceType.ENERGY: 35, ResourceType.WATER: 25, ResourceType.FOOD: 5},
+                "production": {},
+                "construction_time": 55,
+                "workers_needed": 60,
+                "population_increase": 0
+            },
+            BuildingType.CLINIC: {
+                "construction_cost": {ResourceType.STONE: 100, ResourceType.WOOD: 80, ResourceType.METAL: 60},
+                "maintenance_cost": {ResourceType.ENERGY: 18, ResourceType.WATER: 12},
+                "production": {},
+                "construction_time": 20,
+                "workers_needed": 8,
+                "population_increase": 0
+            },
+            
+            # 娱乐类型
+            BuildingType.CINEMA: {
+                "construction_cost": {ResourceType.STONE: 150, ResourceType.WOOD: 100, ResourceType.METAL: 80},
+                "maintenance_cost": {ResourceType.ENERGY: 25, ResourceType.WATER: 15},
+                "production": {},
+                "construction_time": 30,
+                "workers_needed": 15,
+                "population_increase": 0
+            },
+            BuildingType.STADIUM: {
+                "construction_cost": {ResourceType.STONE: 800, ResourceType.METAL: 500, ResourceType.WOOD: 300},
+                "maintenance_cost": {ResourceType.ENERGY: 80, ResourceType.WATER: 50},
+                "production": {},
+                "construction_time": 120,
+                "workers_needed": 200,
+                "population_increase": 0
+            },
+            BuildingType.MUSEUM: {
+                "construction_cost": {ResourceType.STONE: 250, ResourceType.WOOD: 180, ResourceType.METAL: 120},
+                "maintenance_cost": {ResourceType.ENERGY: 22, ResourceType.WATER: 15},
+                "production": {},
+                "construction_time": 40,
+                "workers_needed": 20,
+                "population_increase": 0
+            },
+            
+            # 政府类型
+            BuildingType.GOVERNMENT: {
+                "construction_cost": {ResourceType.STONE: 500, ResourceType.METAL: 300, ResourceType.WOOD: 200},
+                "maintenance_cost": {ResourceType.ENERGY: 40, ResourceType.WATER: 25},
+                "production": {},
+                "construction_time": 70,
+                "workers_needed": 100,
+                "population_increase": 0
+            },
+            BuildingType.POLICE_STATION: {
+                "construction_cost": {ResourceType.STONE: 200, ResourceType.METAL: 150, ResourceType.WOOD: 100},
+                "maintenance_cost": {ResourceType.ENERGY: 25, ResourceType.WATER: 15},
+                "production": {},
+                "construction_time": 30,
+                "workers_needed": 25,
+                "population_increase": 0
+            },
+            BuildingType.FIRE_STATION: {
+                "construction_cost": {ResourceType.STONE: 180, ResourceType.METAL: 140, ResourceType.WOOD: 90},
+                "maintenance_cost": {ResourceType.ENERGY: 20, ResourceType.WATER: 25},
+                "production": {},
+                "construction_time": 28,
+                "workers_needed": 20,
+                "population_increase": 0
+            },
+            
+            # 交通类型
+            BuildingType.BUS_STATION: {
+                "construction_cost": {ResourceType.STONE: 120, ResourceType.METAL: 80, ResourceType.WOOD: 60},
+                "maintenance_cost": {ResourceType.ENERGY: 15, ResourceType.WATER: 8},
+                "production": {},
+                "construction_time": 25,
+                "workers_needed": 8,
+                "population_increase": 0
+            },
+            BuildingType.TRAIN_STATION: {
+                "construction_cost": {ResourceType.STONE: 400, ResourceType.METAL: 300, ResourceType.WOOD: 200},
+                "maintenance_cost": {ResourceType.ENERGY: 45, ResourceType.WATER: 25},
+                "production": {},
+                "construction_time": 60,
+                "workers_needed": 40,
+                "population_increase": 0
+            },
+            BuildingType.PARKING_LOT: {
+                "construction_cost": {ResourceType.STONE: 80, ResourceType.METAL: 40},
+                "maintenance_cost": {ResourceType.ENERGY: 5},
+                "production": {},
+                "construction_time": 15,
+                "workers_needed": 1,
+                "population_increase": 0
+            },
+            BuildingType.AIRPORT: {
+                "construction_cost": {ResourceType.STONE: 2000, ResourceType.METAL: 1500, ResourceType.WOOD: 800},
+                "maintenance_cost": {ResourceType.ENERGY: 200, ResourceType.WATER: 100},
+                "production": {},
+                "construction_time": 180,
+                "workers_needed": 500,
+                "population_increase": 0
+            },
+            
+            # 绿地类型
+            BuildingType.PARK: {
+                "construction_cost": {ResourceType.WOOD: 30, ResourceType.STONE: 20},
+                "maintenance_cost": {ResourceType.WATER: 3},
+                "production": {},
+                "construction_time": 10,
                 "workers_needed": 2,
                 "population_increase": 0
             }
@@ -639,6 +1097,186 @@ class TerrainDevelopmentEngine:
         for building in self.buildings.values():
             if not building.is_completed:
                 self.advance_construction(building.id, random.uniform(0.1, 0.3))
+        
+        # 更新城市指标
+        self.update_urban_metrics()
+    
+    def update_urban_metrics(self):
+        """更新城市指标"""
+        for (x, y), tile in self.terrain_map.items():
+            # 计算交通密度
+            self._calculate_traffic_density(tile, x, y)
+            
+            # 计算污染水平
+            self._calculate_pollution_level(tile, x, y)
+            
+            # 计算犯罪率
+            self._calculate_crime_rate(tile, x, y)
+            
+            # 计算幸福度
+            self._calculate_happiness_index(tile, x, y)
+    
+    def _calculate_traffic_density(self, tile: TerrainTile, x: int, y: int):
+        """计算交通密度"""
+        # 基于可达性和邻近建筑数量
+        neighbors = self.get_neighbors(x, y, radius=2)
+        building_count = sum(1 for n in neighbors if n.buildings)
+        
+        # 交通设施增加交通密度
+        transport_buildings = [b for b in tile.buildings 
+                               if b in self.buildings and 
+                               self.buildings[b].building_type in [
+                                   BuildingType.BUS_STATION, BuildingType.TRAIN_STATION, 
+                                   BuildingType.PARKING_LOT, BuildingType.AIRPORT
+                               ]]
+        
+        base_traffic = tile.accessibility * 0.6
+        building_traffic = min(1.0, building_count / 8) * 0.3
+        transport_traffic = len(transport_buildings) * 0.1
+        
+        tile.traffic_density = min(1.0, base_traffic + building_traffic + transport_traffic)
+    
+    def _calculate_pollution_level(self, tile: TerrainTile, x: int, y: int):
+        """计算污染水平"""
+        # 工业建筑产生污染
+        industrial_buildings = [b for b in tile.buildings 
+                               if b in self.buildings and 
+                               self.buildings[b].building_type in [
+                                   BuildingType.FACTORY, BuildingType.WAREHOUSE, BuildingType.WORKSHOP
+                               ]]
+        
+        # 交通密度影响污染
+        traffic_pollution = tile.traffic_density * 0.4
+        
+        # 工业污染
+        industrial_pollution = len(industrial_buildings) * 0.2
+        
+        # 绿地减少污染
+        green_spaces = [b for b in tile.buildings 
+                       if b in self.buildings and 
+                       self.buildings[b].building_type == BuildingType.PARK]
+        green_reduction = len(green_spaces) * 0.1
+        
+        tile.pollution = max(0.0, min(1.0, traffic_pollution + industrial_pollution - green_reduction))
+    
+    def _calculate_crime_rate(self, tile: TerrainTile, x: int, y: int):
+        """计算犯罪率"""
+        # 警察局和可达性降低犯罪率
+        police_stations = [b for b in tile.buildings 
+                          if b in self.buildings and 
+                          self.buildings[b].building_type == BuildingType.POLICE_STATION]
+        
+        # 贫困和失业增加犯罪率（简化模型）
+        base_crime = 0.3  # 基础犯罪率
+        
+        # 可达性好的区域犯罪率低
+        accessibility_factor = (1 - tile.accessibility) * 0.3
+        
+        # 高密度区域犯罪率高
+        density_factor = tile.traffic_density * 0.2
+        
+        # 污染高的区域犯罪率高
+        pollution_factor = tile.pollution * 0.2
+        
+        # 警察局降低犯罪率
+        police_reduction = len(police_stations) * 0.15
+        
+        # 政府建筑附近犯罪率低
+        government_buildings = [b for b in self.get_neighbors(x, y, radius=3)
+                               if any(bid in self.buildings and 
+                                     self.buildings[bid].building_type == BuildingType.GOVERNMENT
+                                     for bid in b.buildings)]
+        government_reduction = len(government_buildings) * 0.05
+        
+        tile.crime_rate = max(0.0, min(1.0, base_crime + accessibility_factor + 
+                                      density_factor + pollution_factor - 
+                                      police_reduction - government_reduction))
+    
+    def _calculate_happiness_index(self, tile: TerrainTile, x: int, y: int):
+        """计算幸福度指数"""
+        happiness = 0.5  # 基础幸福度
+        
+        # 可达性增加幸福度
+        happiness += tile.accessibility * 0.2
+        
+        # 绿地增加幸福度
+        parks = [b for b in tile.buildings 
+                if b in self.buildings and 
+                self.buildings[b].building_type == BuildingType.PARK]
+        happiness += len(parks) * 0.05
+        
+        # 娱乐设施增加幸福度
+        entertainment = [b for b in tile.buildings 
+                        if b in self.buildings and 
+                        self.buildings[b].building_type in [
+                            BuildingType.CINEMA, BuildingType.STADIUM, BuildingType.MUSEUM
+                        ]]
+        happiness += len(entertainment) * 0.08
+        
+        # 医疗设施增加幸福度
+        medical = [b for b in tile.buildings 
+                  if b in self.buildings and 
+                  self.buildings[b].building_type in [BuildingType.HOSPITAL, BuildingType.CLINIC]]
+        happiness += len(medical) * 0.06
+        
+        # 教育设施增加幸福度
+        education = [b for b in tile.buildings 
+                    if b in self.buildings and 
+                    self.buildings[b].building_type in [BuildingType.SCHOOL, BuildingType.UNIVERSITY, BuildingType.LIBRARY]]
+        happiness += len(education) * 0.06
+        
+        # 污染降低幸福度
+        happiness -= tile.pollution * 0.3
+        
+        # 犯罪率降低幸福度
+        happiness -= tile.crime_rate * 0.4
+        
+        # 高交通密度降低幸福度（噪音）
+        happiness -= tile.traffic_density * 0.15
+        
+        tile.happiness_index = max(0.0, min(1.0, happiness))
+    
+    def get_city_statistics(self) -> dict:
+        """获取城市统计信息"""
+        total_tiles = len(self.terrain_map)
+        developed_tiles = sum(1 for tile in self.terrain_map.values() if tile.development_level > 0.1)
+        building_count = len(self.buildings)
+        
+        # 计算平均指标
+        avg_traffic = sum(tile.traffic_density for tile in self.terrain_map.values()) / total_tiles
+        avg_pollution = sum(tile.pollution for tile in self.terrain_map.values()) / total_tiles
+        avg_crime = sum(tile.crime_rate for tile in self.terrain_map.values()) / total_tiles
+        avg_happiness = sum(tile.happiness_index for tile in self.terrain_map.values()) / total_tiles
+        avg_land_value = sum(tile.land_value for tile in self.terrain_map.values()) / total_tiles
+        
+        # 按区域统计
+        district_stats = {}
+        for district, tiles in self.city_districts.items():
+            if tiles:
+                district_tiles = [self.terrain_map[tile_pos] for tile_pos in tiles if tile_pos in self.terrain_map]
+                district_stats[district.value] = {
+                    "tile_count": len(tiles),
+                    "avg_development": sum(t.development_level for t in district_tiles) / len(district_tiles),
+                    "building_count": sum(len(t.buildings) for t in district_tiles),
+                    "avg_traffic": sum(t.traffic_density for t in district_tiles) / len(district_tiles),
+                    "avg_pollution": sum(t.pollution for t in district_tiles) / len(district_tiles),
+                    "avg_crime": sum(t.crime_rate for t in district_tiles) / len(district_tiles),
+                    "avg_happiness": sum(t.happiness_index for t in district_tiles) / len(district_tiles)
+                }
+        
+        return {
+            "total_tiles": total_tiles,
+            "developed_tiles": developed_tiles,
+            "development_rate": developed_tiles / total_tiles if total_tiles > 0 else 0,
+            "building_count": building_count,
+            "avg_traffic_density": avg_traffic,
+            "avg_pollution_level": avg_pollution,
+            "avg_crime_rate": avg_crime,
+            "avg_happiness_index": avg_happiness,
+            "avg_land_value": avg_land_value,
+            "districts": district_stats,
+            "global_resources": {resource.value: amount for resource, amount in self.global_resources.items()}
+        }
     
     def get_development_statistics(self) -> dict:
         """获取开发统计信息"""

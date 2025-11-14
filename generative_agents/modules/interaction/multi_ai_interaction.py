@@ -9,6 +9,7 @@ import datetime
 import math
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Any, Set, Callable
+from modules.economy.economy import EconomyEngine
 from dataclasses import dataclass, asdict
 from abc import ABC, abstractmethod
 
@@ -426,6 +427,13 @@ class MultiAIInteractionEngine:
         # 初始化交互规则和消息处理器
         self._initialize_interaction_rules()
         self._initialize_message_handlers()
+
+        # 经济引擎（可选）
+        self.economy_engine: Optional[EconomyEngine] = None
+
+    def attach_economy_engine(self, engine: EconomyEngine):
+        """挂载经济引擎以处理交易"""
+        self.economy_engine = engine
     
     def _initialize_interaction_rules(self):
         """初始化交互规则"""
@@ -875,10 +883,33 @@ class MultiAIInteractionEngine:
     
     def _handle_trade(self, message: InteractionMessage, receiver_context: Dict[str, Any]) -> Dict[str, Any]:
         """处理交易消息"""
-        # 简化的交易处理
-        return {
-            "status": "trade_considered"
-        }
+        # 若有经济系统，基于元数据执行交易
+        if self.economy_engine:
+            meta = message.metadata or {}
+            offer_resources = meta.get("offer_resources")
+            request_resources = meta.get("request_resources")
+            offer_items = meta.get("offer_items")
+            request_items = meta.get("request_items")
+            offer_money = float(meta.get("offer_money", 0.0))
+            request_money = float(meta.get("request_money", 0.0))
+
+            result = self.economy_engine.propose_trade(
+                sender=message.sender_id,
+                receiver=message.receiver_id,
+                offer_resources=offer_resources,
+                request_resources=request_resources,
+                offer_items=offer_items,
+                request_items=request_items,
+                offer_money=offer_money,
+                request_money=request_money,
+            )
+
+            outcome = InteractionOutcome.SUCCESS if result.get("status") == "success" else InteractionOutcome.NEUTRAL
+            self._record_interaction(message.sender_id, message.receiver_id, InteractionType.TRADE, outcome, details=result)
+            return result
+
+        # 未挂载经济系统时，简单确认
+        return {"status": "trade_considered"}
     
     def _handle_conflict(self, message: InteractionMessage, receiver_context: Dict[str, Any]) -> Dict[str, Any]:
         """处理冲突消息"""

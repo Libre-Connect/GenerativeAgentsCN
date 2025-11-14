@@ -46,6 +46,30 @@ class AgentGenerator:
         
         return config
     
+    def get_available_characters(self):
+        """获取所有可用的角色图片列表"""
+        try:
+            characters_dir = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                'frontend', 'static', 'assets', 'characters'
+            )
+            
+            if not os.path.exists(characters_dir):
+                print(f"警告：角色图片目录不存在: {characters_dir}")
+                return []
+            
+            # 获取所有PNG图片，排除xcf文件
+            available_images = []
+            for filename in sorted(os.listdir(characters_dir)):
+                if filename.lower().endswith('.png') and not filename.startswith('.'):
+                    available_images.append(filename)
+            
+            return available_images
+            
+        except Exception as e:
+            print(f"获取可用角色列表时出错: {e}")
+            return []
+    
     def generate_agent_images(self, config, user_input=None):
         """处理角色形象选择 - 只生成texture.png"""
         try:
@@ -53,50 +77,156 @@ class AgentGenerator:
             
             # 获取预设角色图片目录
             characters_dir = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),  # generative_agents目录
+                os.path.dirname(os.path.dirname(__file__)),
                 'frontend', 'static', 'assets', 'characters'
             )
             
-            # 检查用户是否选择了特定的角色形象
-            selected_character = None
-            if user_input and user_input.get('selected_character'):
-                selected_character = user_input['selected_character']
-                print(f"用户为角色 {name} 选择了形象: {selected_character}")
-            else:
-                # 如果用户没有选择，随机选择一个
-                available_images = []
-                if os.path.exists(characters_dir):
-                    for filename in os.listdir(characters_dir):
-                        if filename.lower().endswith('.png'):
-                            available_images.append(filename)
-                
-                if not available_images:
-                    print(f"警告：在 {characters_dir} 中没有找到预设角色图片")
-                    return {'texture': None}
-                
-                selected_character = random.choice(available_images)
-                print(f"为角色 {name} 随机选择了预设图片: {selected_character}")
+            # 获取所有可用的角色图片
+            available_images = self.get_available_characters()
             
-            # 构建选中图片的完整路径
+            if not available_images:
+                print(f"警告：在 {characters_dir} 中没有找到角色图片")
+                return {'texture': None, 'available_characters': []}
+            
+            print(f"发现 {len(available_images)} 个可用角色图片")
+            
+            # 选择角色图片
+            selected_character = None
+            
+            if user_input and user_input.get('selected_character'):
+                # 用户明确选择了角色
+                selected_character = user_input['selected_character']
+                
+                # 验证选择的角色是否存在
+                if selected_character not in available_images:
+                    print(f"警告：用户选择的角色 '{selected_character}' 不存在，将随机选择")
+                    selected_character = random.choice(available_images)
+                else:
+                    print(f"✓ 用户为角色 '{name}' 选择了形象: {selected_character}")
+            else:
+                # 智能选择：根据角色属性推荐合适的图片
+                selected_character = self._smart_select_character(config, available_images)
+                print(f"✓ 为角色 '{name}' 智能选择了形象: {selected_character}")
+            
+            # 构建完整路径
             selected_image_path = os.path.join(characters_dir, selected_character)
             
-            # 验证文件是否存在
+            # 验证文件存在
             if not os.path.exists(selected_image_path):
-                print(f"警告：选择的角色图片不存在: {selected_image_path}")
-                return {'texture': None}
+                print(f"错误：选择的角色图片不存在: {selected_image_path}")
+                # 回退到第一个可用图片
+                selected_character = available_images[0]
+                selected_image_path = os.path.join(characters_dir, selected_character)
             
-            # 返回选中的图片路径，只返回texture相关信息
+            # 返回结果
             images = {
-                'texture': f'/static/assets/characters/{selected_character}',   # 用于web显示
-                'selected_image_path': selected_image_path,  # 绝对路径，用于文件复制
-                'selected_image_name': selected_character    # 文件名
+                'texture': f'/static/assets/characters/{selected_character}',
+                'selected_image_path': selected_image_path,
+                'selected_image_name': selected_character,
+                'available_characters': available_images  # 返回所有可用角色供前端选择
             }
             
             return images
             
         except Exception as e:
             print(f"选择角色图片时发生错误: {e}")
-            return {'texture': None}
+            return {'texture': None, 'available_characters': []}
+    
+    def _smart_select_character(self, config, available_images):
+        """根据角色属性智能选择合适的角色图片"""
+        try:
+            age = config.get('age', 25)
+            occupation = config.get('occupation', '').lower()
+            personality = config.get('personality', '').lower()
+            name = config.get('name', '').lower()
+            
+            # 定义角色图片与属性的匹配规则
+            character_rules = {
+                # 年龄相关
+                'young': ['student_', 'littleboy_', 'littlegirl_', 'sample_character_'],
+                'old': ['oldman_', 'oldwoman_', 'father', 'noble'],
+                'middle': ['citizen_', 'suit_', 'father'],
+                
+                # 职业相关
+                'student': ['student_'],
+                'teacher': ['noble', 'father', 'citizen_'],
+                'business': ['suit_', 'president'],
+                'doctor': ['suit_', 'citizen_'],
+                'artist': ['sample_character_', 'heroine', 'hero_'],
+                'merchant': ['shop_keeper', 'citizen_'],
+                'warrior': ['armor', 'hero_', 'badboy'],
+                'knight': ['armor', '骑士', '骑兵'],
+                'farmer': ['citizen_', 'father'],
+                'scientist': ['suit_', 'sample_character_'],
+                'engineer': ['suit_', 'sample_character_'],
+                
+                # 性格相关
+                'friendly': ['citizen_', 'student_', 'sample_character_'],
+                'serious': ['suit_', 'president', 'noble'],
+                'energetic': ['student_', 'hero_', 'sample_character_'],
+                'calm': ['oldman_', 'noble', 'father'],
+                
+                # 特殊角色
+                'leader': ['president', 'noble', 'suit_'],
+                'hero': ['hero_', 'armor', 'heroine']
+            }
+            
+            # 计算每个图片的匹配分数
+            scores = {}
+            for image in available_images:
+                score = 0
+                image_lower = image.lower()
+                
+                # 年龄匹配
+                if age < 18:
+                    for pattern in character_rules.get('young', []):
+                        if pattern in image_lower:
+                            score += 3
+                elif age > 50:
+                    for pattern in character_rules.get('old', []):
+                        if pattern in image_lower:
+                            score += 3
+                else:
+                    for pattern in character_rules.get('middle', []):
+                        if pattern in image_lower:
+                            score += 2
+                
+                # 职业匹配
+                for job_key, patterns in character_rules.items():
+                    if job_key in occupation:
+                        for pattern in patterns:
+                            if pattern in image_lower:
+                                score += 5
+                
+                # 性格匹配
+                for trait_key, patterns in character_rules.items():
+                    if trait_key in personality:
+                        for pattern in patterns:
+                            if pattern in image_lower:
+                                score += 2
+                
+                # 名字匹配（精确匹配中文）
+                if '骑士' in name or 'knight' in name:
+                    if '骑士' in image or 'knight' in image_lower:
+                        score += 10
+                if '骑兵' in name or 'cavalry' in name:
+                    if '骑兵' in image or 'cavalry' in image_lower:
+                        score += 10
+                
+                scores[image] = score
+            
+            # 如果有高分图片，从高分中随机选择
+            max_score = max(scores.values())
+            if max_score > 0:
+                high_score_images = [img for img, score in scores.items() if score >= max_score * 0.8]
+                return random.choice(high_score_images)
+            
+            # 没有匹配的，随机选择
+            return random.choice(available_images)
+            
+        except Exception as e:
+            print(f"智能选择角色时出错: {e}")
+            return random.choice(available_images)
     
     def _build_agent_prompt(self, user_input: Dict[str, Any]) -> str:
         """构建AI生成agent配置的提示词"""
@@ -534,32 +664,25 @@ class AgentGenerator:
             
             print(f"Configuration saved to: {config_path}")
             
-            # 复制并保存图片（只生成texture.png）
+            # 复制并保存图片（只生成texture.png，不生成portrait.png）
             if images.get('selected_image_path'):
-                # 新的逻辑：从预设图片中复制
+                # 从预设角色图片中复制
                 try:
                     selected_image_path = images['selected_image_path']
                     
-                    # 只复制为texture.png
+                    # 只复制为texture.png（96x128像素）
                     texture_path = os.path.join(folder_path, 'texture.png')
                     self._copy_and_resize_image(selected_image_path, texture_path, (96, 128))
-                    print(f"Texture copied and resized to: {texture_path}")
+                    print(f"✓ Texture复制成功: {texture_path}")
+                    print(f"  源文件: {images.get('selected_image_name')}")
                     
                 except Exception as e:
-                    print(f"Failed to copy preset images: {e}")
+                    print(f"✗ 复制角色图片失败: {e}")
                     # 创建默认纹理图
                     self._create_default_image(os.path.join(folder_path, 'texture.png'))
             else:
-                # 旧的逻辑：下载生成的图片（保持兼容性，只保存texture）
-                if images.get('texture'):
-                    try:
-                        texture_path = os.path.join(folder_path, 'texture.png')
-                        self._download_image(images['texture'], texture_path)
-                        print(f"Texture saved to: {texture_path}")
-                    except Exception as e:
-                        print(f"Failed to save texture: {e}")
-                        # 创建默认纹理图
-                        self._create_default_image(os.path.join(folder_path, 'texture.png'))
+                print("警告：没有选中的角色图片，创建默认texture")
+                self._create_default_image(os.path.join(folder_path, 'texture.png'))
             
             print(f"Agent {agent_name} successfully saved to: {folder_path}")
             return folder_path

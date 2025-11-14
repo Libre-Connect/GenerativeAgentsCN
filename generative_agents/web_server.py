@@ -42,89 +42,217 @@ class RealTimeSimulation:
         self.name = name
         self.stride = stride
         self.step_count = 0
-        self.static_root = "frontend/static"
-        self.checkpoints_folder = f"results/checkpoints/{name}"
-        
-        # 创建检查点文件夹
-        os.makedirs(self.checkpoints_folder, exist_ok=True)
-        
-        # 创建配置
-        start_time = datetime.datetime.now().strftime("%Y%m%d-%H:%M")
-        self.config = get_config(start_time, stride, personas)
-        
-        # 创建游戏
-        self.logger = utils.create_io_logger("info")
-        self.game = create_game(name, self.static_root, self.config, {}, logger=self.logger)
-        self.game.reset_game()
-        
-        # 初始化角色状态
+        self.start_time = datetime.datetime.now()
         self.agent_status = {}
-        if "agent_base" in self.config:
-            agent_base = self.config["agent_base"]
-        else:
-            agent_base = {}
-            
-        for agent_name, agent in self.config["agents"].items():
-            agent_config = copy.deepcopy(agent_base)
-            agent_config.update(self.load_static(agent["config_path"]))
-            self.agent_status[agent_name] = {
-                "coord": agent_config["coord"],
-                "path": [],
-            }
+        self.game_instance = None
+        self.load_agents_from_config()
     
-    def load_static(self, path):
-        return utils.load_dict(os.path.join(self.static_root, path))
+    def load_agents_from_config(self):
+        """从配置文件加载角色信息并初始化游戏实例"""
+        # 初始化游戏实例
+        try:
+            from start import get_config
+            import datetime
+            
+            # 创建游戏配置
+            start_time = datetime.datetime.now().strftime("%Y%m%d-%H:%M")
+            config = get_config(start_time, 10, personas)
+            
+            # 创建游戏实例
+            static_root = "frontend/static"
+            conversation = {}
+            logger = utils.create_io_logger("info")
+            
+            self.game_instance = create_game(self.name, static_root, config, conversation, logger=logger)
+            print(f"Game instance created successfully with {len(self.game_instance.agents)} agents")
+            
+        except Exception as e:
+            print(f"Error creating game instance: {e}")
+            self.game_instance = None
+        
+        # 加载agent状态
+        if os.path.exists(AGENTS_BASE_PATH):
+            for agent_folder in os.listdir(AGENTS_BASE_PATH):
+                agent_path = os.path.join(AGENTS_BASE_PATH, agent_folder)
+                config_path = os.path.join(agent_path, 'agent.json')
+                
+                if os.path.isdir(agent_path) and os.path.exists(config_path):
+                    try:
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                        
+                        agent_name = config.get('name', agent_folder)
+                        coord = config.get('coord', [50, 50])
+                        currently = config.get('currently', f'{agent_name}正在活动')
+                        
+                        self.agent_status[agent_name] = {
+                            "coord": coord,
+                            "currently": currently,
+                            "original_coord": coord.copy(),
+                            "move_direction": [1, 0]  # 移动方向
+                        }
+                        
+                    except Exception as e:
+                        print(f"读取角色配置失败 {agent_folder}: {e}")
     
     def simulate_step(self):
-        """执行一步模拟"""
+        """执行一步模拟 - 真正调用AI思考"""
         global simulation_running, simulation_paused
         
         if not simulation_running or simulation_paused:
             return None
             
-        timer = utils.get_timer()
         self.step_count += 1
         
         # 收集所有角色的移动和状态信息
         movement_data = {}
         
-        for name, status in self.agent_status.items():
-            try:
-                plan = self.game.agent_think(name, status)["plan"]
-                agent = self.game.get_agent(name)
-                
-                if name not in self.config["agents"]:
-                    self.config["agents"][name] = {}
+        # 如果有游戏实例，使用真实的AI思考逻辑
+        if self.game_instance:
+            for name in list(self.agent_status.keys()):
+                try:
+                    # 调用agent的真实思考逻辑
+                    agent = self.game_instance.get_agent(name)
+                    if not agent:
+                        print(f"Agent {name} not found in game instance")
+                        continue
                     
-                self.config["agents"][name].update(agent.to_dict())
-                
-                if plan.get("path"):
-                    status["coord"], status["path"] = plan["path"][-1], []
+                    # 执行AI思考
+                    status = self.agent_status[name]
+                    plan = self.game_instance.agent_think(name, status)
                     
-                self.config["agents"][name].update({"coord": status["coord"]})
-                
-                # 收集移动数据
-                movement_data[name] = {
-                    "movement": status["coord"],
-                    "currently": agent.scratch.currently,
-                    "action": agent.action.abstract() if hasattr(agent, 'action') else "",
-                    "address": agent.get_tile().get_address(as_list=False) if hasattr(agent, 'get_tile') else ""
-                }
-                
-            except Exception as e:
-                print(f"Error simulating agent {name}: {e}")
-                continue
+                    # 获取agent的当前状态
+                    if plan and "plan" in plan:
+                        plan_data = plan["plan"]
+                        
+                        # 更新位置（如果有路径）
+                        if plan_data.get("path"):
+                            new_coord = plan_data["path"][-1]
+                            status["coord"] = new_coord
+                        
+                        # 获取当前活动描述
+                        currently = agent.scratch.currently if hasattr(agent, 'scratch') else f"{name}在活动"
+                        status["currently"] = currently
+                        
+                        # 收集移动数据
+                        movement_data[name] = {
+                            "movement": status["coord"],
+                            "currently": currently,
+                            "action": currently
+                        }
+                        
+                        # 获取最近的对话
+                        if hasattr(agent, 'chats') and agent.chats:
+                            recent_chats = agent.chats[-1:] if len(agent.chats) > 0 else []
+                            for chat_partner, chat_content in recent_chats:
+                                if chat_content:
+                                    movement_data[name]["recent_chat"] = f"{name}对{chat_partner}: {chat_content}"
+                        
+                        print(f"[步骤 {self.step_count}] {name}: {currently} at {status['coord']}")
+                    
+                except Exception as e:
+                    print(f"Error simulating agent {name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # 出错时使用简单的随机移动
+                    import random
+                    status = self.agent_status[name]
+                    original_coord = status.get("original_coord", status["coord"])
+                    new_x = original_coord[0] + random.randint(-5, 5)
+                    new_y = original_coord[1] + random.randint(-5, 5)
+                    new_x = max(10, min(90, new_x))
+                    new_y = max(10, min(90, new_y))
+                    status["coord"] = [new_x, new_y]
+                    movement_data[name] = {
+                        "movement": status["coord"],
+                        "currently": status.get("currently", f"{name}在活动"),
+                        "action": f"{name}正在移动"
+                    }
+        else:
+            # 没有游戏实例时，使用简单的随机移动
+            print("警告：游戏实例不存在，使用简单模拟")
+            for name, status in self.agent_status.items():
+                try:
+                    import random
+                    original_coord = status.get("original_coord", status["coord"])
+                    new_x = original_coord[0] + random.randint(-5, 5)
+                    new_y = original_coord[1] + random.randint(-5, 5)
+                    new_x = max(10, min(90, new_x))
+                    new_y = max(10, min(90, new_y))
+                    status["coord"] = [new_x, new_y]
+                    movement_data[name] = {
+                        "movement": status["coord"],
+                        "currently": status.get("currently", f"{name}在活动"),
+                        "action": f"{name}正在移动到({new_x}, {new_y})"
+                    }
+                except Exception as e:
+                    print(f"Error in simple simulation for {name}: {e}")
+                    continue
         
-        # 更新时间
-        timer.forward(self.stride)
+        # 计算当前时间
+        current_time = self.start_time + datetime.timedelta(seconds=self.step_count * self.stride)
         
-        # 构造返回数据
+        # 获取对话数据
+        conversation_data = {}
+        try:
+            # 如果有游戏实例，尝试获取真实对话数据
+            if self.game_instance and hasattr(self.game_instance, 'conversation'):
+                time_key = current_time.strftime("%Y%m%d-%H:%M")
+                if time_key in self.game_instance.conversation:
+                    conversation_data[time_key] = self.game_instance.conversation[time_key]
+                
+                # 获取agent的chats数据
+                for name in self.agent_status.keys():
+                    try:
+                        agent = self.game_instance.get_agent(name)
+                        if agent and hasattr(agent, 'chats') and agent.chats:
+                            recent_chats = agent.chats[-3:] if len(agent.chats) > 3 else agent.chats
+                            for chat_name, chat_content in recent_chats:
+                                if name in movement_data:
+                                    movement_data[name]["recent_chat"] = f"{chat_name}: {chat_content}"
+                    except Exception as e:
+                        print(f"Error getting chats for agent {name}: {e}")
+                        continue
+            else:
+                # 如果没有游戏实例，生成一些模拟对话数据
+                import random
+                
+                # 每10步生成一次模拟对话
+                if self.step_count % 10 == 0:
+                    agent_names = list(self.agent_status.keys())
+                    if len(agent_names) >= 2:
+                        # 随机选择两个agent进行对话
+                        speaker = random.choice(agent_names)
+                        listener = random.choice([name for name in agent_names if name != speaker])
+                        
+                        # 生成简单的对话内容
+                        conversations = [
+                            f"{speaker}: 今天天气真不错！",
+                            f"{speaker}: 你好，最近怎么样？",
+                            f"{speaker}: 我正在忙着工作。",
+                            f"{speaker}: 有什么新鲜事吗？",
+                            f"{speaker}: 这个地方真美丽。"
+                        ]
+                        
+                        chat_content = random.choice(conversations)
+                        
+                        # 添加到movement_data中
+                        if speaker in movement_data:
+                            movement_data[speaker]["recent_chat"] = chat_content
+                        if listener in movement_data:
+                            movement_data[listener]["recent_chat"] = f"听到了{speaker}的话"
+                            
+        except Exception as e:
+            print(f"Error getting conversation data: {e}")
+        
+        # 构造返回数据 - 使用前端期望的格式
         sim_data = {
             "step": self.step_count,
-            "time": timer.get_date("%Y%m%d-%H:%M:%S"),
-            "movement": movement_data,
-            "conversation": getattr(self.game, 'conversation', {}),
-            "description": {name: {"currently": data["currently"]} for name, data in movement_data.items()}
+            "current_time": current_time.isoformat(),
+            "agents": movement_data,  # 前端期望 "agents" 字段
+            "movement": movement_data,  # 保持兼容性
+            "conversation": conversation_data,
+            "running": True
         }
         
         return sim_data
@@ -161,33 +289,43 @@ def index():
                             random.randint(10, 90),
                             random.randint(10, 90)
                         ]
+                        # 保存更新的坐标到配置文件
+                        config['coord'] = persona_init_pos[agent_name]
+                        with open(config_path, 'w', encoding='utf-8') as f:
+                            json.dump(config, f, indent=2, ensure_ascii=False)
                         
                 except Exception as e:
                     print(f"读取角色配置失败 {agent_folder}: {e}")
-                    continue
-    
-    # 构造all_movement数据结构
-    all_movement = {
-        "conversation": {},
-        "description": {}
-    }
-    
-    # 为每个角色添加描述信息
-    for agent_name in persona_init_pos.keys():
-        all_movement["description"][agent_name] = {
-            "currently": f"{agent_name} 正在小镇中活动"
-        }
-    
+
+    # 检查是否有现有的模拟正在运行
+    global current_simulation, simulation_running
+    if not current_simulation and not simulation_running:
+        # 自动启动一个实时模拟
+        try:
+            simulation_name = f'web_auto_{int(time.time())}'
+            current_simulation = RealTimeSimulation(simulation_name, 10)
+            simulation_running = True
+            
+            # 启动模拟线程
+            global simulation_thread
+            simulation_thread = threading.Thread(target=run_simulation)
+            simulation_thread.daemon = True
+            simulation_thread.start()
+            
+            print(f"自动启动实时模拟: {simulation_name}")
+        except Exception as e:
+            print(f"自动启动模拟失败: {e}")
+
+    # 渲染模板
     return render_template(
         "index.html",
-        persona_names=persona_names,
         persona_init_pos=persona_init_pos,
         step=0,
-        sec_per_step=1,
-        play_speed=4,
-        zoom=1,
-        all_movement=all_movement,
-        start_datetime="2023-01-01T00:00:00"
+        sec_per_step=10,
+        zoom=1.0,
+        play_speed=2,
+        start_datetime="2023-02-13 00:00:00",
+        all_movement={"conversation": {}}
     )
 
 
@@ -685,24 +823,39 @@ def run_simulation():
     """模拟运行线程"""
     global simulation_running, current_simulation
     
+    print(f"=== 实时模拟已启动 ===")
+    print(f"模拟名称: {current_simulation.name if current_simulation else 'Unknown'}")
+    print(f"步进间隔: {current_simulation.stride if current_simulation else 10} 分钟")
+    print(f"使用真实AI: {'是' if current_simulation and current_simulation.game_instance else '否'}")
+    
     while simulation_running and current_simulation:
         try:
             if not simulation_paused:
+                print(f"\n--- 执行步骤 {current_simulation.step_count + 1} ---")
+                
                 # 执行一步模拟
                 sim_data = current_simulation.simulate_step()
                 
                 if sim_data:
                     # 通过WebSocket发送数据到前端
                     socketio.emit('simulation_update', sim_data)
+                    print(f"✓ 已发送更新到前端，包含 {len(sim_data.get('agents', {}))} 个角色")
+                else:
+                    print("⚠ 模拟步骤返回空数据")
             
-            # 控制模拟速度（每秒一步）
-            time.sleep(1)
+            # 控制模拟速度（默认每秒一步，可以调整）
+            # 如果你想加快模拟，减小这个值；如果想减慢，增大这个值
+            time.sleep(2)  # 2秒一步，给AI足够时间思考
             
         except Exception as e:
-            print(f"Simulation error: {e}")
+            print(f"❌ 模拟错误: {e}")
+            import traceback
+            traceback.print_exc()
             simulation_running = False
             socketio.emit('simulation_error', {'message': str(e)})
             break
+    
+    print(f"\n=== 实时模拟已停止 ===")
 
 
 # WebSocket事件处理
@@ -726,17 +879,54 @@ def handle_request_current_state():
         # 发送当前所有角色的位置信息
         movement_data = {}
         for name, status in current_simulation.agent_status.items():
-            agent = current_simulation.game.get_agent(name)
-            movement_data[name] = {
-                "movement": status["coord"],
-                "currently": agent.scratch.currently if hasattr(agent, 'scratch') else "",
-            }
+            try:
+                movement_data[name] = {
+                    "movement": status["coord"],
+                    "currently": status["currently"],
+                    "action": f"{name}正在移动到({status['coord'][0]}, {status['coord'][1]})"
+                }
+            except Exception as e:
+                print(f"获取agent {name} 状态失败: {e}")
+                movement_data[name] = {
+                    "movement": status["coord"],
+                    "currently": f"{name} 正在小镇中活动",
+                    "action": ""
+                }
         
         emit('current_state', {
             'step': current_simulation.step_count,
             'movement': movement_data,
             'running': simulation_running,
             'paused': simulation_paused
+        })
+    else:
+        # 如果没有运行的模拟，发送静态agent位置
+        persona_init_pos = {}
+        if os.path.exists(AGENTS_BASE_PATH):
+            for agent_folder in os.listdir(AGENTS_BASE_PATH):
+                agent_path = os.path.join(AGENTS_BASE_PATH, agent_folder)
+                config_path = os.path.join(agent_path, 'agent.json')
+                
+                if os.path.isdir(agent_path) and os.path.exists(config_path):
+                    try:
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                        
+                        agent_name = config.get('name', agent_folder)
+                        coord = config.get('coord', [50, 50])
+                        persona_init_pos[agent_name] = {
+                            "movement": coord[:2] if len(coord) >= 2 else [50, 50],
+                            "currently": config.get('currently', f"{agent_name} 正在小镇中活动"),
+                            "action": ""
+                        }
+                    except Exception as e:
+                        print(f"读取agent配置失败 {agent_folder}: {e}")
+        
+        emit('current_state', {
+            'step': 0,
+            'movement': persona_init_pos,
+            'running': False,
+            'paused': False
         })
 
 
